@@ -19,7 +19,7 @@ from typing import Any
 from deepagents import create_deep_agent
 from langchain_core.language_models import BaseChatModel
 
-from deep_apartment_finder.filesystem.routes import build_backend_factory
+from deep_apartment_finder.filesystem.routes import build_backend
 from deep_apartment_finder.ports.apartment_repository import ApartmentRepository
 from deep_apartment_finder.ports.scraper import ScraperPort
 from deep_apartment_finder.subagents.fotocasa_scraper import build_fotocasa_scraper_subagent
@@ -42,18 +42,18 @@ def build_orchestrator(
     Returns a `CompiledStateGraph` from LangGraph. The caller invokes
     `agent.invoke({...})` to run it.
     """
-    backend_factory = build_backend_factory()
+    backend = build_backend()
     subagent = build_fotocasa_scraper_subagent(
         scraper=scraper,
         repo=repo,
-        backend_factory=backend_factory,
+        backend=backend,
     )
     return create_deep_agent(
         model=llm,
         tools=[],  # orchestrator only delegates; tools live on subagents
         system_prompt=_load_orchestrator_prompt(),
         subagents=[subagent],  # type: ignore[list-item]
-        backend=backend_factory,
+        backend=backend,
         # No interrupt_on: this is an automated daily run, not a HITL
         # workflow. Sprint 2 may add approval for notifications.
     )
