@@ -51,9 +51,13 @@ class Apartment:
         `raw` is persisted as `raw_json`; we keep the keys separate so the
         repository never has to know the column-vs-field-name mapping.
 
-        Decimals and datetimes are coerced to JSON-safe scalars (`str`)
+        `Decimal` columns (`price_eur`, `size_m2`, `lat`, `lng`) and the
+        `scraped_at` timestamp are coerced to JSON-safe scalars (`str`)
         so the dict is round-trippable through `json.dumps`. Postgres
-        parses numeric fields from text and timestamps from ISO 8601.
+        parses numeric fields from text natively; the repository
+        converts the ISO 8601 timestamp back to a `datetime` before
+        binding it to the `timestamptz` column (asyncpg does not
+        accept ISO strings directly).
         """
         return {
             "source": self.source.value,
