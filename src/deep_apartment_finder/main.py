@@ -24,7 +24,6 @@ from deep_apartment_finder.adapters.postgres.connection import get_pool
 from deep_apartment_finder.adapters.postgres.repository import PostgresApartmentRepository
 from deep_apartment_finder.adapters.scrapers.fotocasa.scraper import (
     FotocasaScraper,
-    _build_playwright_renderer,
 )
 from deep_apartment_finder.agent.orchestrator import build_orchestrator
 from deep_apartment_finder.config import Settings, get_settings
@@ -56,7 +55,6 @@ async def build_app(settings: Settings | None = None) -> RunContext:
     pool = await get_pool(settings)
     scraper = FotocasaScraper(
         settings=settings,
-        renderer=_build_playwright_renderer(),
         max_cards=settings.ingest_max_listings,
     )
     repo = PostgresApartmentRepository(pool)
