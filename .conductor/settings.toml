@@ -1,0 +1,58 @@
+#:schema https://conductor.build/schemas/settings.repo.schema.json
+
+# Shared Conductor settings for deep-apartment-finder.
+#
+# Conventions sourced from this repo:
+#   - Package manager: uv  (pyproject.toml: [tool.uv] package = true)
+#   - Database:        docker compose (docker-compose.yml)
+#   - CLI entrypoint:  `uv run python -m deep_apartment_finder …`
+#   - Env file:        .env.example is committed; .env is gitignored.
+#
+# Setup creates a workspace-local .env from the committed template so the app
+# is runnable on its own without touching the host machine's env.
+#
+# Run scripts are intentionally nonconcurrent: the stack owns a single
+# docker-compose Postgres on a single host port, and the orchestrator writes
+# to a single apartments table. Two concurrent workspaces would race on
+# the same database state.
+
+[scripts]
+# `nonconcurrent`: the stack owns a single docker-compose Postgres on a single
+# host port, and the orchestrator writes to a single `apartments` table. Two
+# concurrent workspaces would race on the same database state, so starting a
+# run script in a new workspace stops any other run script first.
+run_mode = "nonconcurrent"
+
+# uv sync (with dev extras) + a local .env from the template + docker compose up.
+# Idempotent and non-interactive: `uv sync` and `cp -n` are safe to re-run.
+# `docker compose up -d` is the only piece that touches the host, and it is
+# scoped to a project-named container.
+setup = """
+uv sync --extra dev
+cp -n .env.example .env || true
+docker compose up -d
+"""
+
+# Stop and remove the docker-compose stack so the archived workspace leaves
+# no Postgres container, no named volume, and no .env behind.
+# Safe: only targets project-scoped resources; `|| true` on the final two
+# steps in case the setup was never run in this workspace.
+archive = """
+docker compose down --volumes --remove-orphans || true
+rm -f .env || true
+"""
+
+# Two run scripts — pick one from the Run button menu.
+# `run` is the default: brings up the agent (long-lived) on a per-workspace
+# port and watches the orchestrator output. `validate-quality` is a one-shot
+# database quality report (no scraper, no LLM); kept here so reviewers can
+# run it from a fresh workspace.
+
+[scripts.run.agent]
+command = "uv run python -m deep_apartment_finder run"
+default = true
+icon = "rocket"
+
+[scripts.run.validate]
+command = "uv run python -m deep_apartment_finder validate-quality"
+icon = "test-tube"

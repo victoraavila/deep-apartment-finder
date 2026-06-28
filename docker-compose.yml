@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: daf-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-apartments}
+      POSTGRES_USER: ${POSTGRES_USER:-apartments}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apartments}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - daf-postgres-data:/var/lib/postgresql/data
+      # Migrations are applied from the host via the CLI in Sprint 1.
+      # Mounting the SQL file as a one-shot init script is intentionally not done
+      # here so the app can run migrations explicitly and idempotently.
+      - ./src/deep_apartment_finder/adapters/postgres/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-apartments} -d ${POSTGRES_DB:-apartments}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  daf-postgres-data:
