@@ -93,8 +93,12 @@ class PostgresApartmentRepository(ApartmentRepository):
         d = apartment.to_ingest_dict()
         # `to_ingest_dict` produces JSON-safe scalars (Decimals as str,
         # scraped_at as ISO 8601). asyncpg binds these to the SQL
-        # parameters; Postgres parses numeric fields from text and
-        # timestamptz from ISO 8601 natively.
+        # parameters; Postgres parses numeric fields from text. We
+        # convert the ISO timestamp back to a `datetime` because
+        # asyncpg's `timestamptz` codec only accepts that.
+        scraped_at = d["scraped_at"]
+        if isinstance(scraped_at, str) and scraped_at:
+            scraped_at = datetime.fromisoformat(scraped_at)
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 _UPSERT_SQL,
@@ -112,7 +116,7 @@ class PostgresApartmentRepository(ApartmentRepository):
                 d["description"],
                 d["pet_policy"],
                 json.dumps(d["raw_json"], default=_json_default),
-                d["scraped_at"],
+                scraped_at,
             )
         if row is None:
             return Duplicate(external_id=apartment.external_id)

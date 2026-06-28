@@ -129,8 +129,12 @@ async def test_upsert_sends_parameters_in_documented_order():
     assert args[11] == "3-bedroom, 2-bath"
     assert args[12] is None  # pet_policy
     assert json.loads(args[13]) == {"soup": "raw payload"}
-    assert isinstance(args[14], str)
-    assert "T" in args[14]  # ISO 8601 timestamp
+    # scraped_at is converted from the JSON-safe ISO string back to a
+    # `datetime` before binding, because asyncpg's timestamptz codec
+    # only accepts `datetime` objects.
+    from datetime import datetime as _dt
+
+    assert isinstance(args[14], _dt)
 
 
 @pytest.mark.asyncio
