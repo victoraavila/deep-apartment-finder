@@ -31,14 +31,20 @@ class Settings(BaseSettings):
         description="asyncpg-compatible DSN",
     )
 
-    # --- LLM primary (Groq) ----------------------------------------------
-    groq_api_key: str | None = None
-    groq_model: str = "llama-3.3-70b-versatile"
-
-    # --- LLM fallback (opencode-go / GLM) --------------------------------
+    # --- LLM primary (OpenCode Go, OpenAI-compatible) -------------------
+    # Default model is qwen3.6-plus (closest analog to what we used to
+    # run on Groq's free tier); users can override via OPENCODE_MODEL.
+    # Available OpenAI-compatible Go models: glm-5, glm-5.1, kimi-k2.5,
+    # kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash, qwen3.5-plus,
+    # qwen3.6-plus, mimo-v2-pro, mimo-v2-omni. (The MiniMax M2.x line
+    # uses the Anthropic protocol and is not addressable here.)
     opencode_api_key: str | None = None
     opencode_base_url: str | None = None
-    opencode_model: str = "glm-4.6"
+    opencode_model: str = "qwen3.6-plus"
+
+    # --- LLM fallback (Groq) --------------------------------------------
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # --- Observability ----------------------------------------------------
     langsmith_api_key: str | None = None
@@ -54,12 +60,14 @@ class Settings(BaseSettings):
     )
 
     @property
-    def has_groq(self) -> bool:
-        return bool(self.groq_api_key)
+    def has_opencode_primary(self) -> bool:
+        # The base URL is optional at the env level; the LLM factory
+        # falls back to the canonical OpenCode Go endpoint when blank.
+        return bool(self.opencode_api_key)
 
     @property
-    def has_opencode_fallback(self) -> bool:
-        return bool(self.opencode_api_key and self.opencode_base_url)
+    def has_groq_fallback(self) -> bool:
+        return bool(self.groq_api_key)
 
 
 @lru_cache(maxsize=1)

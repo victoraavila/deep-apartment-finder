@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 
+from deep_apartment_finder.filesystem.routes import build_backend
 from deep_apartment_finder.ports.scraper import ListingCard
 from deep_apartment_finder.subagents.fotocasa_scraper import build_fotocasa_scraper_subagent
 from tests._fakes import FakeScraper, InMemoryApartmentRepository, make_apartment
@@ -53,7 +54,7 @@ def test_subagent_factory_binds_expected_tools():
     scraper = FakeScraper()
     repo = InMemoryApartmentRepository()
     sub = build_fotocasa_scraper_subagent(
-        scraper=scraper, repo=repo, backend_factory=lambda r: None
+        scraper=scraper, repo=repo, backend=build_backend()
     )
     assert sub["name"] == "fotocasa_scraper"
     assert {t.name for t in sub["tools"]} == {
@@ -81,7 +82,7 @@ async def test_subagent_pipeline_persists_rows_and_returns_counts():
     )
     repo = InMemoryApartmentRepository()
     sub = build_fotocasa_scraper_subagent(
-        scraper=scraper, repo=repo, backend_factory=lambda r: None
+        scraper=scraper, repo=repo, backend=build_backend()
     )
 
     outputs = await _drive_fotocasa_subagent(
@@ -119,7 +120,7 @@ async def test_subagent_pipeline_surfaces_duplicates():
     repo = InMemoryApartmentRepository()
     await repo.upsert(apt)  # already present
     sub = build_fotocasa_scraper_subagent(
-        scraper=scraper, repo=repo, backend_factory=lambda r: None
+        scraper=scraper, repo=repo, backend=build_backend()
     )
 
     outputs = await _drive_fotocasa_subagent(
@@ -144,7 +145,7 @@ async def test_subagent_pipeline_persists_hard_filter_to_scraper():
     scraper = FakeScraper()
     repo = InMemoryApartmentRepository()
     sub = build_fotocasa_scraper_subagent(
-        scraper=scraper, repo=repo, backend_factory=lambda r: None
+        scraper=scraper, repo=repo, backend=build_backend()
     )
     await _drive_fotocasa_subagent(
         sub["tools"],

@@ -86,7 +86,7 @@ def test_is_rate_limit_detects_various_signals():
     # response.status_code == 500, no rate-limit signal
     assert _is_rate_limit(Exc()) is False
 
-    # Message-based detection
+    # Message-based detection (string args — the easy case).
     assert _is_rate_limit(Exception("429 too many requests")) is True
     assert _is_rate_limit(Exception("Rate limit reached")) is True
     assert _is_rate_limit(Exception("rate-limit hit")) is True
@@ -118,3 +118,39 @@ def test_is_rate_limit_detects_various_signals():
     # stack should not flip the verdict.
     innocent_function(plain)
     assert _is_rate_limit(plain) is False
+
+
+def test_is_rate_limit_detects_dict_args_from_provider_sdk():
+    """Regression: the Groq / OpenAI SDKs raise with `args=(error_dict,)`
+    where the human-readable text lives under `error.message`. The
+    previous version of `_is_rate_limit` only scanned string args and
+    missed these entirely, causing the router to skip the fallback
+    on real provider rate-limits.
+    """
+    groq_shape = Exception(
+        {
+            "error": {
+                "message": (
+                    "Rate limit reached for model `qwen/qwen3.6-27b` "
+                    "on tokens per minute (TPM): Limit 8000, "
+                    "Used 6960, Requested 7492."
+                ),
+                "type": "tokens",
+                "code": "rate_limit_exceeded",
+            }
+        }
+    )
+    assert _is_rate_limit(groq_shape) is True
+
+    # Same shape, but a non-rate-limit error — must NOT trigger.
+    not_rate_limit = Exception(
+        {"error": {"message": "Invalid API key provided.", "type": "auth"}}
+    )
+    assert _is_rate_limit(not_rate_limit) is False
+
+    # Nested-dict shape: message nested under a key that itself is nested.
+    nested = Exception({"detail": {"reason": "429 quota exceeded"}})
+    assert _is_rate_limit(nested) is True
+
+    # Empty dict — must not raise and must not trigger.
+    assert _is_rate_limit(Exception({})) is False

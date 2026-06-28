@@ -1,6 +1,6 @@
 """Per-subagent filesystem routes (ADR-005).
 
-Builds the `CompositeBackend` factory passed to `create_deep_agent`.
+Builds the `CompositeBackend` passed to `create_deep_agent`.
 
 Layered isolation (per ADR-005):
 
@@ -14,14 +14,17 @@ Layered isolation (per ADR-005):
 
 Sprint 1 uses `InMemoryStore`; Sprint 5 swaps in `PostgresStore` for
 cross-process persistence.
+
+Deep Agents 0.7.0 deprecates the `(runtime) -> Backend` factory shape in
+favour of passing a `BackendProtocol` instance directly. The current pin
+(`>=0.6.12,<0.7`) still accepts the factory, but we build the instance
+here so the migration to 0.7 is a one-line bump rather than a refactor.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
-
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.protocol import BackendProtocol
 from langgraph.store.memory import InMemoryStore
 
 # Persistent subtrees (Sprint 1; Sprint 3/4/5 add /ranker/, /notifier/, /memories/).
@@ -31,34 +34,26 @@ PERSISTENT_ROUTES: tuple[str, ...] = (
 )
 
 
-def build_backend_factory(
+def build_backend(
     *,
     store: InMemoryStore | None = None,
-) -> Callable[..., Any]:
-    """Return a `(runtime) -> CompositeBackend` factory.
+) -> CompositeBackend:
+    """Return a `CompositeBackend` instance ready to hand to `create_deep_agent`.
 
-    The factory is what `create_deep_agent(backend=...)` expects. It
-    receives a runtime object from LangGraph on each invocation and
-    returns a fresh `CompositeBackend` for that run.
+    - `StateBackend` (default) is ephemeral per LangGraph run.
+    - `StoreBackend` (persistent) backs every route in `PERSISTENT_ROUTES`,
+      sharing a single `InMemoryStore` namespace. Sprint 5 swaps the
+      in-memory store for `PostgresStore` to persist across processes.
     """
     if store is None:
         store = InMemoryStore()
 
-    def _factory(runtime: Any) -> CompositeBackend:
-        # StateBackend is the ephemeral default; anything not matched by
-        # a route below lands here and disappears at the end of the run.
-        # Per deepagents 0.7.0+, StateBackend reads state via get_config()
-        # and no longer takes `runtime`.
-        default = StateBackend()
-        # StoreBackend is the persistent store. The default namespace is
-        # `("filesystem",)`, so all persistent files live under that
-        # prefix in the store. Per deepagents 0.7.0+, pass the store
-        # explicitly; StoreBackend no longer takes `runtime`.
-        persistent: Any = StoreBackend(store=store)
-        routes: dict[str, Any] = {prefix: persistent for prefix in PERSISTENT_ROUTES}
-        return CompositeBackend(default=default, routes=routes)
-
-    return _factory
+    default: BackendProtocol = StateBackend()
+    persistent: BackendProtocol = StoreBackend(store=store)
+    routes: dict[str, BackendProtocol] = {
+        prefix: persistent for prefix in PERSISTENT_ROUTES
+    }
+    return CompositeBackend(default=default, routes=routes)
 
 
-__all__ = ["PERSISTENT_ROUTES", "build_backend_factory"]
+__all__ = ["PERSISTENT_ROUTES", "build_backend"]

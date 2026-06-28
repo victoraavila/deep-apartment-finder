@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from deepagents.backends.protocol import BackendProtocol
 from langchain_core.tools import BaseTool
 
 from deep_apartment_finder.ports.apartment_repository import ApartmentRepository
@@ -38,7 +39,7 @@ def build_fotocasa_scraper_subagent(
     *,
     scraper: ScraperPort,
     repo: ApartmentRepository,
-    backend_factory: Any,
+    backend: BackendProtocol,
 ) -> dict[str, Any]:
     """Build the `fotocasa_scraper` subagent descriptor.
 
@@ -49,7 +50,7 @@ def build_fotocasa_scraper_subagent(
         make_search_listings_tool(scraper),
         make_fetch_listing_tool(scraper),
         make_ingest_apartment_tool(repo),
-        make_save_snapshot_tool(backend_factory),
+        make_save_snapshot_tool(backend),
     ]
     return {
         "name": "fotocasa_scraper",
