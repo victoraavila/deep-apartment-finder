@@ -45,6 +45,7 @@ from deep_apartment_finder.ports.notifier import Notifier
 from deep_apartment_finder.ports.ranking_repository import RankingRepository
 from deep_apartment_finder.ports.scraper import ScraperPort
 from deep_apartment_finder.subagents.fotocasa_scraper import build_fotocasa_scraper_subagent
+from deep_apartment_finder.subagents.idealista_scraper import build_idealista_scraper_subagent
 from deep_apartment_finder.subagents.researcher import build_researcher_subagent
 from deep_apartment_finder.tools.researcher.count_neighborhoods import (
     make_count_dangerous_neighborhoods_tool,
@@ -63,7 +64,8 @@ def _load_orchestrator_prompt() -> str:
 def build_orchestrator(
     *,
     llm: BaseChatModel,
-    scraper: ScraperPort,
+    fotocasa_scraper: ScraperPort,
+    idealista_scraper: ScraperPort | None = None,
     repo: ApartmentRepository,
     dangerous_repo: DangerousNeighborhoodRepository,
     ranking_repo: RankingRepository,
@@ -83,11 +85,17 @@ def build_orchestrator(
     async methods on the returned object via `run_deterministic_steps`
     (see `Orchestrator` below). The LLM part is the LangGraph
     `CompiledStateGraph` you can `.ainvoke(...)`.
+
+    `idealista_scraper` is optional for backward compatibility: when
+    `None`, only `fotocasa_scraper` is registered (Sprint 1/2
+    behaviour). When provided, the orchestrator delegates to both
+    subagents in a single run and their listings are merged in
+    `ingest_apartment` (cross-portal dedup is Sprint 3 Pillar F).
     """
     backend = build_backend()
     subagents: list[dict[str, Any]] = [
         build_fotocasa_scraper_subagent(
-            scraper=scraper,
+            scraper=fotocasa_scraper,
             repo=repo,
             backend=backend,
         ),
@@ -97,6 +105,14 @@ def build_orchestrator(
             search_backend=researcher_search_backend,
         ),
     ]
+    if idealista_scraper is not None:
+        subagents.append(
+            build_idealista_scraper_subagent(
+                scraper=idealista_scraper,
+                repo=repo,
+                backend=backend,
+            )
+        )
     orchestrator_tools = [
         make_count_dangerous_neighborhoods_tool(dangerous_repo),
     ]

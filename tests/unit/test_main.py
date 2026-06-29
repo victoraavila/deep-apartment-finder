@@ -40,6 +40,7 @@ def test_build_orchestrator_for_cli_is_synchronous(monkeypatch: Any) -> None:
         settings=Settings(groq_api_key="test"),
         pool=object(),  # type: ignore[arg-type]
         scraper=FakeScraper(),
+        idealista_scraper=None,
         repo=InMemoryApartmentRepository(),
         dangerous_repo=InMemoryDangerousNeighborhoodRepository(),
         ranking_repo=InMemoryRankingRepository(),
@@ -70,6 +71,7 @@ def test_build_orchestrator_for_cli_wires_exa_key_to_researcher(monkeypatch: Any
         settings=Settings(groq_api_key="test", exa_api_key="exa-test"),
         pool=object(),  # type: ignore[arg-type]
         scraper=FakeScraper(),
+        idealista_scraper=None,
         repo=InMemoryApartmentRepository(),
         dangerous_repo=InMemoryDangerousNeighborhoodRepository(),
         ranking_repo=InMemoryRankingRepository(),

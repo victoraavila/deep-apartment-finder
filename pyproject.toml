@@ -31,6 +31,12 @@ dependencies = [
   # HTTP + HTML parsing (Fotocasa)
   "httpx>=0.27",
   "selectolax>=0.3.21",
+  # TLS/HTTP2 fingerprint impersonation (Idealista — DataDome-protected
+  # search pages require a real-browser ciphersuite and TLS profile. Plain
+  # `httpx` is 403'd; `curl_cffi` impersonating `chrome131` returns the
+  # SSR'd search HTML. Detail pages are still blocked for non-browser
+  # clients; the adapter degrades gracefully to card-only data.)
+  "curl-cffi>=0.15.0",
 
   # CSR fallback (optional at runtime; needed for the `playwright` path)
   "playwright>=1.43",
