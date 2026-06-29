@@ -38,6 +38,11 @@ PERSISTENT_ROUTES: tuple[str, ...] = (
 )
 
 
+def _store_namespace(_runtime: object) -> tuple[str, ...]:
+    """Stable namespace for the persistent virtual filesystem."""
+    return ("filesystem",)
+
+
 def build_backend(
     *,
     store: InMemoryStore | None = None,
@@ -53,7 +58,10 @@ def build_backend(
         store = InMemoryStore()
 
     default: BackendProtocol = StateBackend()
-    persistent: BackendProtocol = StoreBackend(store=store)
+    persistent: BackendProtocol = StoreBackend(
+        store=store,
+        namespace=_store_namespace,
+    )
     routes: dict[str, BackendProtocol] = {
         prefix: persistent for prefix in PERSISTENT_ROUTES
     }
