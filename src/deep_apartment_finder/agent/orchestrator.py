@@ -2,27 +2,56 @@
 
 Built with `create_deep_agent(...)`. Owns:
 - the reasoning LLM (with the opencode-go fallback already wrapped in),
-- a single subagent (`fotocasa_scraper`),
-- a `CompositeBackend` that routes `/fotocasa_scraper/` and
-  `/orchestrator/` to the persistent store and everything else to
-  ephemeral state.
+- two LLM-driven subagents (`researcher`, `fotocasa_scraper`),
+- the deterministic `ranker` and `notifier` Python steps,
+- a `CompositeBackend` that routes `/researcher/`, `/fotocasa_scraper/`,
+  `/orchestrator/`, `/ranker/`, `/notifier/` to the persistent store and
+  everything else to ephemeral state.
 
 The orchestrator does not own a repository or a scraper directly. The
-*subagent* does. The orchestrator is a planner and a summarizer.
+*subagent* owns the scraper. The orchestrator is a planner and a
+summarizer, plus the entry point that runs the deterministic ranker
+and notifier steps.
+
+The flow:
+1. `researcher` (LLM) — only if `dangerous_neighborhoods` is empty.
+   On the first run the operator is asked to re-run after the
+   researcher has populated the table.
+2. `fotocasa_scraper` (LLM) — Sprint 1's flow, now also extracting
+   `pet_policy` and `furnished` at ingest.
+3. `compute_ranking` (Python) — deterministic scoring.
+4. `send_notification` (Python) — render + send + dedup-per-day.
 """
 
 from __future__ import annotations
 
+import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
 from langchain_core.language_models import BaseChatModel
 
+from deep_apartment_finder.domain.filters.hard import HardFilters
+from deep_apartment_finder.domain.notifier import send_notification
+from deep_apartment_finder.domain.ranking import RankableApartment, compute_ranking
 from deep_apartment_finder.filesystem.routes import build_backend
 from deep_apartment_finder.ports.apartment_repository import ApartmentRepository
+from deep_apartment_finder.ports.dangerous_neighborhood_repository import (
+    DangerousNeighborhoodRepository,
+)
+from deep_apartment_finder.ports.notifier import Notifier
+from deep_apartment_finder.ports.ranking_repository import RankingRepository
 from deep_apartment_finder.ports.scraper import ScraperPort
 from deep_apartment_finder.subagents.fotocasa_scraper import build_fotocasa_scraper_subagent
+from deep_apartment_finder.subagents.researcher import build_researcher_subagent
+from deep_apartment_finder.tools.researcher.count_neighborhoods import (
+    make_count_dangerous_neighborhoods_tool,
+)
+from deep_apartment_finder.tools.researcher.web_search import SearchBackend
+
+logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "subagents" / "prompts"
 
@@ -36,24 +65,233 @@ def build_orchestrator(
     llm: BaseChatModel,
     scraper: ScraperPort,
     repo: ApartmentRepository,
+    dangerous_repo: DangerousNeighborhoodRepository,
+    ranking_repo: RankingRepository,
+    notifier: Notifier | None,
+    from_address: str | None = None,
+    to_address: str | None = None,
+    weight_distance: float = 0.5,
+    weight_pet_policy: float = 0.3,
+    weight_furnished: float = 0.2,
+    max_distance_m: float = 2000.0,
+    top_n: int = 5,
+    researcher_search_backend: SearchBackend | None = None,
 ) -> Any:
     """Build the compiled orchestrator graph.
 
-    Returns a `CompiledStateGraph` from LangGraph. The caller invokes
-    `agent.invoke({...})` to run it.
+    The deterministic ranker / notifier steps are exposed as plain
+    async methods on the returned object via `run_deterministic_steps`
+    (see `Orchestrator` below). The LLM part is the LangGraph
+    `CompiledStateGraph` you can `.ainvoke(...)`.
     """
     backend = build_backend()
-    subagent = build_fotocasa_scraper_subagent(
-        scraper=scraper,
-        repo=repo,
-        backend=backend,
-    )
-    return create_deep_agent(
+    subagents: list[dict[str, Any]] = [
+        build_fotocasa_scraper_subagent(
+            scraper=scraper,
+            repo=repo,
+            backend=backend,
+        ),
+        build_researcher_subagent(
+            repo=dangerous_repo,
+            backend=backend,
+            search_backend=researcher_search_backend,
+        ),
+    ]
+    orchestrator_tools = [
+        make_count_dangerous_neighborhoods_tool(dangerous_repo),
+    ]
+    graph = create_deep_agent(
         model=llm,
-        tools=[],  # orchestrator only delegates; tools live on subagents
+        tools=orchestrator_tools,
         system_prompt=_load_orchestrator_prompt(),
-        subagents=[subagent],  # type: ignore[list-item]
+        subagents=subagents,  # type: ignore[arg-type]
         backend=backend,
         # No interrupt_on: this is an automated daily run, not a HITL
-        # workflow. Sprint 2 may add approval for notifications.
+        # workflow. Sprint 5 may add approval for notifications.
     )
+    deterministic = _DeterministicSteps(
+        repo=repo,
+        dangerous_repo=dangerous_repo,
+        ranking_repo=ranking_repo,
+        notifier=notifier,
+        backend=backend,
+        from_address=from_address,
+        to_address=to_address,
+        weight_distance=weight_distance,
+        weight_pet_policy=weight_pet_policy,
+        weight_furnished=weight_furnished,
+        max_distance_m=max_distance_m,
+        top_n=top_n,
+    )
+    return Orchestrator(graph=graph, deterministic=deterministic)
+
+
+class _DeterministicSteps:
+    """The Python side of the orchestrator: ranker + notifier.
+
+    The orchestrator's LLM does the *planning*; the deterministic
+    ranker and notifier are pure async functions. We expose them as
+    methods on a small object so the CLI can call them directly.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo: ApartmentRepository,
+        dangerous_repo: DangerousNeighborhoodRepository,
+        ranking_repo: RankingRepository,
+        notifier: Notifier | None,
+        backend: Any,
+        from_address: str | None,
+        to_address: str | None,
+        weight_distance: float,
+        weight_pet_policy: float,
+        weight_furnished: float,
+        max_distance_m: float,
+        top_n: int,
+    ) -> None:
+        self._repo = repo
+        self._dangerous_repo = dangerous_repo
+        self._ranking_repo = ranking_repo
+        self._notifier = notifier
+        self._backend = backend
+        self._from_address = from_address
+        self._to_address = to_address
+        self._weight_distance = weight_distance
+        self._weight_pet_policy = weight_pet_policy
+        self._weight_furnished = weight_furnished
+        self._max_distance_m = max_distance_m
+        self._top_n = top_n
+
+    async def run(self) -> dict[str, Any]:
+        """Run the deterministic steps in order.
+
+        Returns a dict with `ranking` and `notification` keys (either
+        may be missing if the run was short-circuited).
+        """
+        # 1. Load the dangerous neighborhoods (used by the ranker).
+        neighborhoods = await self._dangerous_repo.list_all()
+        if not neighborhoods:
+            logger.info(
+                "deterministic: dangerous_neighborhoods is empty; "
+                "the ranker will use a neutral 0.5 for the distance "
+                "criterion"
+            )
+
+        # 2. Load all stored apartments (with their DB ids).
+        rows = await self._repo.list_all(limit=5000)
+        hard_filters = HardFilters()
+        filtered_out = len(rows)
+        rows = [(db_id, apt) for db_id, apt in rows if hard_filters.passes(apt)]
+        filtered_out -= len(rows)
+        if filtered_out:
+            logger.info(
+                "deterministic: skipped %d stored apartments that fail "
+                "Sprint 1 hard filters",
+                filtered_out,
+            )
+        if not rows:
+            return {
+                "ranking": None,
+                "notification": None,
+                "apartments_scored": 0,
+                "note": "no apartments passing hard filters to rank",
+            }
+        rankables = [RankableApartment(apartment=apt, db_id=db_id) for db_id, apt in rows]
+
+        # 3. Run the ranker.
+        ranking = await compute_ranking(
+            rankables=rankables,
+            neighborhoods=neighborhoods,
+            ranking_repo=self._ranking_repo,
+            weight_distance=self._weight_distance,
+            weight_pet_policy=self._weight_pet_policy,
+            weight_furnished=self._weight_furnished,
+            max_distance_m=self._max_distance_m,
+            top_n=self._top_n,
+            ranking_run_id=uuid.uuid4(),
+        )
+
+        # 4. Run the notifier (no-op when notifier is not configured).
+        notification = None
+        if self._notifier is not None and self._from_address and self._to_address:
+            apartments_by_id = {r.db_id: r for r in rankables}
+            notification = await send_notification(
+                ranking=ranking,
+                apartments_by_id=apartments_by_id,
+                ranking_repo=self._ranking_repo,
+                notifier=self._notifier,
+                backend=self._backend,
+                from_address=self._from_address,
+                to_address=self._to_address,
+            )
+
+        # 5. Persist a per-run report under /ranker/reports/ so the
+        #    operator can read the breakdown without a SQL query.
+        report_path = f"/ranker/reports/{ranking['ranking_run_id']}.json"
+        try:
+            import json as _json
+
+            await self._backend.awrite(
+                report_path,
+                _json.dumps(
+                    {
+                        "ranking_run_id": str(ranking["ranking_run_id"]),
+                        "apartments_scored": ranking["apartments_scored"],
+                        "scores_written": ranking["scores_written"],
+                        "top": ranking["top"],
+                        "weights": {
+                            "distance": self._weight_distance,
+                            "pet_policy": self._weight_pet_policy,
+                            "furnished": self._weight_furnished,
+                        },
+                        "max_distance_m": self._max_distance_m,
+                        "notification": (
+                            {
+                                "sent": notification.sent,
+                                "skipped_reason": notification.skipped_reason,
+                                "subject": notification.subject,
+                            }
+                            if notification
+                            else None
+                        ),
+                    },
+                    indent=2,
+                    default=str,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("orchestrator: ranker report write failed: %s", exc)
+
+        return {
+            "ranking": ranking,
+            "notification": notification,
+            "apartments_scored": ranking["apartments_scored"],
+        }
+
+
+class Orchestrator:
+    """The composite orchestrator: LLM graph + deterministic steps.
+
+    The CLI drives both: it calls `graph.ainvoke(...)` for the LLM
+    part (planning + delegating to subagents), then
+    `deterministic.run()` for the ranker + notifier.
+    """
+
+    def __init__(self, *, graph: Any, deterministic: _DeterministicSteps) -> None:
+        self._graph = graph
+        self._deterministic = deterministic
+
+    @property
+    def graph(self) -> Any:
+        return self._graph
+
+    @property
+    def deterministic(self) -> _DeterministicSteps:
+        return self._deterministic
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._graph.ainvoke(*args, **kwargs)
+
+
+__all__ = ["Orchestrator", "build_orchestrator"]

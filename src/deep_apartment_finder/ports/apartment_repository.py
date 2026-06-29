@@ -44,4 +44,17 @@ class ApartmentRepository(Protocol):
 
     async def recent(self, limit: int = 10) -> list[Apartment]: ...
 
+    async def list_all(
+        self, limit: int = 5000
+    ) -> list[tuple[int, Apartment]]:
+        """Return every stored apartment, capped at `limit`.
+
+        The result is a list of `(db_id, Apartment)` tuples so the
+        ranker can write `apartment_scores.apartment_id` rows that
+        satisfy the FK. The cap is a safety belt for the first few
+        runs; the ranker sorts + takes the top N from whatever it
+        gets, so the cap doesn't change correctness.
+        """
+        ...
+
     async def close(self) -> None: ...

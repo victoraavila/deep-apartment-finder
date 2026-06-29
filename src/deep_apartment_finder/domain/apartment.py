@@ -42,6 +42,7 @@ class Apartment:
     lng: Decimal | None = None
     description: str | None = None
     pet_policy: str | None = None
+    furnished: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
     scraped_at: datetime = field(default_factory=_utcnow)
 
@@ -73,6 +74,7 @@ class Apartment:
             "lng": str(self.lng) if self.lng is not None else None,
             "description": self.description,
             "pet_policy": self.pet_policy,
+            "furnished": self.furnished,
             "raw_json": self.raw,
             "scraped_at": self.scraped_at.isoformat() if self.scraped_at else None,
         }
@@ -101,6 +103,7 @@ class Apartment:
             lng=_maybe_decimal(data.get("lng")),
             description=_maybe_str(data.get("description")),
             pet_policy=_maybe_str(data.get("pet_policy")),
+            furnished=_maybe_str(data.get("furnished")),
             raw=data.get("raw", data),
             scraped_at=_utcnow(),
         )

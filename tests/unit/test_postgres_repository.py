@@ -112,7 +112,8 @@ async def test_upsert_sends_parameters_in_documented_order():
     assert "ON CONFLICT (source, external_id) DO NOTHING" in sql
     assert "RETURNING id" in sql
     # Source, external_id, url, title, price_eur, rooms, bathrooms,
-    # size_m2, address, lat, lng, description, pet_policy, raw_json, scraped_at
+    # size_m2, address, lat, lng, description, pet_policy, furnished,
+    # raw_json, scraped_at
     assert args[0] == "fotocasa"
     assert args[1] == "abc-1"
     assert args[2] == "https://fotocasa.es/abc-1"
@@ -128,13 +129,14 @@ async def test_upsert_sends_parameters_in_documented_order():
     assert args[10] is None  # lng
     assert args[11] == "3-bedroom, 2-bath"
     assert args[12] is None  # pet_policy
-    assert json.loads(args[13]) == {"soup": "raw payload"}
+    assert args[13] is None  # furnished
+    assert json.loads(args[14]) == {"soup": "raw payload"}
     # scraped_at is converted from the JSON-safe ISO string back to a
     # `datetime` before binding, because asyncpg's timestamptz codec
     # only accepts `datetime` objects.
     from datetime import datetime as _dt
 
-    assert isinstance(args[14], _dt)
+    assert isinstance(args[15], _dt)
 
 
 @pytest.mark.asyncio
@@ -190,6 +192,7 @@ async def test_recent_orders_by_scraped_at_desc_and_caps_at_limit():
                 "lng": None,
                 "description": None,
                 "pet_policy": None,
+                "furnished": None,
                 "raw_json": {"k": "v"},
                 "scraped_at": datetime(2026, 1, 2, tzinfo=UTC),
             }
@@ -228,6 +231,7 @@ def test_row_to_apartment_decodes_raw_jsonb():
         "lng": None,
         "description": None,
         "pet_policy": None,
+        "furnished": None,
         "raw_json": {"nested": 1},
         "scraped_at": datetime(2026, 1, 1, tzinfo=UTC),
     }

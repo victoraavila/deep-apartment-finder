@@ -208,7 +208,7 @@ class FotocasaScraper(ScraperPort):
         prop_id = _extract_property_id(url)
         if prop_id and prop_id in self._item_cache:
             raw = self._item_cache[prop_id]
-            apt = item_to_apartment(raw, base_url=FOTOCASA_PAGE_BASE)  # type: ignore[arg-type]
+            apt = item_to_apartment(raw, base_url=FOTOCASA_PAGE_BASE)
             if apt is not None:
                 return apt
 
