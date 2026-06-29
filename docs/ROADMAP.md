@@ -41,6 +41,7 @@ Avoid duplicating content between this file and the sprint files.
 | DB access | Raw SQL + `asyncpg` migrations (no ORM) |
 | Scheduler | Local `cron` calling the CLI; abstraction layer keeps it deployable to a VPS |
 | Notification | Free tier (Resend / SMTP / Twilio) — provider chosen in Sprint 2 |
+| Observability | **LangSmith** traces + structured CLI/run reports |
 | Idiomes | Decisions and discussion in PT-BR; all code and docs files in English |
 
 ## Execution model — agent-driven
@@ -95,6 +96,14 @@ non-breaking change.
   should make it obvious whether the system is researching, ingesting,
   blocked, retrying, ranking, or notifying instead of showing only low-level
   HTTP POST logs.
+- **LangSmith full-pipeline tracing:** instrument the complete run in
+  LangSmith, not only LLM-dependent steps. Every run should have one parent
+  trace with child spans for orchestrator planning, researcher web search,
+  scraper search/fetch/ingest, Postgres reads/writes, hard-filter decisions,
+  ranker score computation, notification rendering, SMTP send/dedup, and
+  filesystem report writes. The trace should expose state transitions,
+  counts, input/output summaries, errors, retries, and skip reasons so the
+  operator can reconstruct what happened even for deterministic code paths.
 
 ## Sprints — abstract view
 
@@ -113,12 +122,16 @@ LLM), a `ranker` subagent, a `notifier` subagent, and a daily free-tier
 notification of the top 5. Wire up the local cron scheduler for real.
 Decisions Q3, Q4, Q5 are resolved at the start of this sprint.
 
-### Sprint 3 — Second scraping source
-Add a second adapter under `adapters/scrapers/` following the same `ScraperPort`
-(OCP: no changes to Fotocasa or the orchestrator). Candidate order: another
-easy portal first; Idealista with SSR/CSR + stealth strategy if Fotocasa
-alone is insufficient. Prepares the cross-portal dedup use case that may
-motivate embeddings in Sprint 4.
+### Sprint 3 — Observability + second scraping source
+First make the full daily run observable: structured CLI phase output plus
+LangSmith tracing that covers LLM calls and deterministic states alike
+(database operations, scraper HTTP, ranking, notification rendering, SMTP,
+dedup skips, and report writes). Then add a second adapter under
+`adapters/scrapers/` following the same `ScraperPort` (OCP: no changes to
+Fotocasa or the orchestrator). Candidate order: another easy portal first;
+Idealista with SSR/CSR + stealth strategy if Fotocasa alone is insufficient.
+Prepares the cross-portal dedup use case that may motivate embeddings in
+Sprint 4.
 
 ### Sprint 4 — Embeddings (purpose to be decided)
 Decide between the three embedding use cases (Q2), activate the
@@ -127,9 +140,9 @@ Decide between the three embedding use cases (Q2), activate the
 similarity where applicable.
 
 ### Sprint 5 (optional) — Production
-Migrate the compose + cron to a VPS, enable permanent LangSmith tracing, add
-backoff/retry and collection-failure alerting. Only undertaken if the daily
-loop is stable enough to leave running.
+Migrate the compose + cron to a VPS, make LangSmith tracing durable in the
+production environment, add backoff/retry and collection-failure alerting.
+Only undertaken if the daily loop is stable enough to leave running.
 
 ## ADRs
 - ADR-001 — Framework: Deep Agents
