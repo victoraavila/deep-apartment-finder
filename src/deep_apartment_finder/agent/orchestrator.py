@@ -227,7 +227,7 @@ class _DeterministicSteps:
         finally:
             if self._observer is not None:
                 duration_ms = int((time.monotonic() - start) * 1000)
-                await self._observer.end_phase(
+                await self._observer.phase_end(
                     "ranker",
                     duration_ms=duration_ms,
                     counts={
@@ -282,7 +282,7 @@ class _DeterministicSteps:
                 counts: dict[str, int] = {}
                 if notification is not None:
                     counts["apartment_ids"] = len(notification.apartment_ids)
-                await self._observer.end_phase(
+                await self._observer.phase_end(
                     "notifier", duration_ms=duration_ms, counts=counts
                 )
         return notification
@@ -331,7 +331,7 @@ class _DeterministicSteps:
 
         if self._observer is not None:
             await self._observer.count("rows_loaded", len(rows))
-            await self._observer.end_phase(
+            await self._observer.phase_end(
                 "ranker_setup",
                 duration_ms=0,
                 counts={"rows_loaded": len(rows), "filtered_hard_filters": filtered_out},

@@ -169,7 +169,7 @@ def run(
                 notifier=build_notifier_for_cli(ctx),
                 observer=_FanOutObserver(observers),
             )
-            await cli_observer.end_phase("setup", duration_ms=0)
+            await cli_observer.phase_end("setup", duration_ms=0)
 
             # 1. First-run gate: check if the dangerous-neighborhoods
             #    table is empty. If so, the LLM has to decide whether
@@ -194,7 +194,7 @@ def run(
                     "researcher",
                     "first run: operator must re-run after eyeballing the list",
                 )
-                await cli_observer.end_phase(
+                await cli_observer.phase_end(
                     "researcher", duration_ms=0, errors=0
                 )
                 summary = _summarize_llm_result(result, deterministic=None)
@@ -223,12 +223,12 @@ def run(
                     {"messages": [{"role": "user", "content": prompt}]},
                     config=config,
                 )
-                await cli_observer.end_phase("scraper", duration_ms=0)
+                await cli_observer.phase_end("scraper", duration_ms=0)
 
             # 3. Deterministic part (ranker + notifier).
             await cli_observer.phase_start("deterministic_tail")
             deterministic = await orchestrator.deterministic.run()
-            await cli_observer.end_phase("deterministic_tail", duration_ms=0)
+            await cli_observer.phase_end("deterministic_tail", duration_ms=0)
             summary = _summarize_llm_result(None, deterministic=deterministic)
             return await _finalize_run(
                 summary=summary,
