@@ -58,6 +58,18 @@ class Settings(BaseSettings):
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     )
+    # Sprint 3 — per-portal delay override. The Idealista search page is
+    # DataDome-protected, so the scraper must appear less aggressive than
+    # the Fotocasa scraper. 2.0s matches ADR-011.
+    idealista_scraper_delay_seconds: float = 2.0
+    # `curl_cffi` impersonation target for the Idealista scraper. Tested
+    # values: `chrome131` and `chrome124` pass DataDome; `chrome142` does
+    # not. Pinned so the operator doesn't have to discover the working
+    # profile.
+    idealista_impersonate: str = "chrome131"
+    # Set to `false` to skip Idealista entirely (e.g. if DataDome starts
+    # blocking the working profile, or for tests).
+    idealista_enabled: bool = True
 
     # --- Researcher web search ------------------------------------------
     exa_api_key: str | None = None

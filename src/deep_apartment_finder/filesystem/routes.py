@@ -30,6 +30,7 @@ from langgraph.store.memory import InMemoryStore
 # Persistent subtrees (Sprint 1 + Sprint 2; Sprint 3/4/5 add /memories/).
 PERSISTENT_ROUTES: tuple[str, ...] = (
     "/fotocasa_scraper/",
+    "/idealista_scraper/",
     "/orchestrator/",
     "/researcher/",
     "/ranker/",

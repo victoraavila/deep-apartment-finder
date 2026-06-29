@@ -35,6 +35,9 @@ from deep_apartment_finder.adapters.postgres.repository import (
 from deep_apartment_finder.adapters.scrapers.fotocasa.scraper import (
     FotocasaScraper,
 )
+from deep_apartment_finder.adapters.scrapers.idealista.scraper import (
+    IdealistaScraper,
+)
 from deep_apartment_finder.agent.orchestrator import Orchestrator, build_orchestrator
 from deep_apartment_finder.config import Settings, get_settings
 from deep_apartment_finder.llm import build_chat_model_with_fallback
@@ -55,7 +58,8 @@ _MIGRATIONS_DIR = (
 class RunContext:
     settings: Settings
     pool: asyncpg.Pool
-    scraper: ScraperPort
+    scraper: ScraperPort  # Fotocasa (kept for backward compatibility)
+    idealista_scraper: ScraperPort | None  # Sprint 3 second scraper
     repo: ApartmentRepository
     dangerous_repo: DangerousNeighborhoodRepository
     ranking_repo: RankingRepository
@@ -64,7 +68,7 @@ class RunContext:
 async def build_app(settings: Settings | None = None) -> RunContext:
     """Build a fully-wired application context.
 
-    Opens a Postgres pool, constructs the scraper and the
+    Opens a Postgres pool, constructs the scrapers and the
     repositories. The caller owns the lifecycle and must call
     `RunContext.pool.close()` when done.
     """
@@ -74,6 +78,12 @@ async def build_app(settings: Settings | None = None) -> RunContext:
         settings=settings,
         max_cards=settings.ingest_max_listings,
     )
+    idealista_scraper: ScraperPort | None = None
+    if getattr(settings, "idealista_enabled", True):
+        idealista_scraper = IdealistaScraper(
+            settings=settings,
+            max_cards=settings.ingest_max_listings,
+        )
     repo = PostgresApartmentRepository(pool)
     dangerous_repo = PostgresDangerousNeighborhoodRepository(pool)
     ranking_repo = PostgresRankingRepository(pool)
@@ -81,6 +91,7 @@ async def build_app(settings: Settings | None = None) -> RunContext:
         settings=settings,
         pool=pool,
         scraper=scraper,
+        idealista_scraper=idealista_scraper,
         repo=repo,
         dangerous_repo=dangerous_repo,
         ranking_repo=ranking_repo,
@@ -108,7 +119,8 @@ def build_orchestrator_for_cli(
     )
     result: Orchestrator = build_orchestrator(
         llm=llm,
-        scraper=ctx.scraper,
+        fotocasa_scraper=ctx.scraper,
+        idealista_scraper=ctx.idealista_scraper,
         repo=ctx.repo,
         dangerous_repo=ctx.dangerous_repo,
         ranking_repo=ctx.ranking_repo,
