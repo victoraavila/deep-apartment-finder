@@ -59,6 +59,28 @@ class Settings(BaseSettings):
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     )
 
+    # --- Researcher web search ------------------------------------------
+    exa_api_key: str | None = None
+
+    # --- Notification (Gmail SMTP) ---------------------------------------
+    # The App Password is generated in the operator's Google account
+    # security settings (2FA must be on). The address is the Gmail
+    # login that owns the App Password.
+    gmail_smtp_host: str = "smtp.gmail.com"
+    gmail_smtp_port: int = 465
+    gmail_smtp_address: str | None = None
+    gmail_smtp_app_password: str | None = None
+    notify_to_address: str | None = None
+
+    # --- Ranking weights (soft criteria) --------------------------------
+    # Final score = sum(weight_i * score_i) / sum(weight_i).
+    # Defaults match `SPRINT2.md`. Tune here, not in code.
+    rank_weight_distance: float = 0.5
+    rank_weight_pet_policy: float = 0.3
+    rank_weight_furnished: float = 0.2
+    rank_max_distance_m: float = 2000.0
+    rank_top_n: int = 5
+
     @property
     def has_opencode_primary(self) -> bool:
         # The base URL is optional at the env level; the LLM factory
@@ -68,6 +90,10 @@ class Settings(BaseSettings):
     @property
     def has_groq_fallback(self) -> bool:
         return bool(self.groq_api_key)
+
+    @property
+    def has_gmail_smtp(self) -> bool:
+        return bool(self.gmail_smtp_address) and bool(self.gmail_smtp_app_password)
 
 
 @lru_cache(maxsize=1)

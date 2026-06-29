@@ -120,3 +120,6 @@ loop is stable enough to leave running.
 - ADR-003 — Database: Postgres + pgvector
 - ADR-004 — Execution: agent-driven, DIY free scraping
 - ADR-005 — Per-subagent filesystem: CompositeBackend + prefix-forcing tools + prompt
+- ADR-006 — Researcher subagent + dangerous-neighborhoods constants table
+- ADR-007 — Haversine distance provider
+- ADR-008 — Gmail SMTP notifier

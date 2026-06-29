@@ -6,10 +6,10 @@ through `main.py`.
 
 Two build functions:
 - `build_app()` returns a `RunContext` carrying every dependency the
-  CLI needs (settings, pool, scraper, repo, llm). `build_app` is
-  async because opening the pool is async.
-- `build_orchestrator_for_cli(...)` returns the compiled graph the
-  CLI's `run` subcommand invokes.
+  CLI needs (settings, pool, scraper, repo, llm, plus the Sprint 2
+  dangerous-neighborhood, ranking, and notifier deps).
+- `build_orchestrator_for_cli(...)` returns the composite orchestrator
+  (LLM graph + deterministic steps) the CLI's `run` subcommand uses.
 """
 
 from __future__ import annotations
@@ -20,16 +20,31 @@ from typing import Any
 
 import asyncpg
 
+from deep_apartment_finder.adapters.distance.haversine import HaversineDistanceProvider
+from deep_apartment_finder.adapters.notifiers.gmail_smtp import GmailSmtpNotifier
 from deep_apartment_finder.adapters.postgres.connection import get_pool
-from deep_apartment_finder.adapters.postgres.repository import PostgresApartmentRepository
+from deep_apartment_finder.adapters.postgres.dangerous_neighborhood_repository import (
+    PostgresDangerousNeighborhoodRepository,
+)
+from deep_apartment_finder.adapters.postgres.ranking_repository import (
+    PostgresRankingRepository,
+)
+from deep_apartment_finder.adapters.postgres.repository import (
+    PostgresApartmentRepository,
+)
 from deep_apartment_finder.adapters.scrapers.fotocasa.scraper import (
     FotocasaScraper,
 )
-from deep_apartment_finder.agent.orchestrator import build_orchestrator
+from deep_apartment_finder.agent.orchestrator import Orchestrator, build_orchestrator
 from deep_apartment_finder.config import Settings, get_settings
 from deep_apartment_finder.llm import build_chat_model_with_fallback
 from deep_apartment_finder.ports.apartment_repository import ApartmentRepository
+from deep_apartment_finder.ports.dangerous_neighborhood_repository import (
+    DangerousNeighborhoodRepository,
+)
+from deep_apartment_finder.ports.ranking_repository import RankingRepository
 from deep_apartment_finder.ports.scraper import ScraperPort
+from deep_apartment_finder.tools.researcher.web_search import ExaSearchBackend
 
 _MIGRATIONS_DIR = (
     Path(__file__).parent / "adapters" / "postgres" / "migrations"
@@ -42,14 +57,16 @@ class RunContext:
     pool: asyncpg.Pool
     scraper: ScraperPort
     repo: ApartmentRepository
+    dangerous_repo: DangerousNeighborhoodRepository
+    ranking_repo: RankingRepository
 
 
 async def build_app(settings: Settings | None = None) -> RunContext:
     """Build a fully-wired application context.
 
-    Opens a Postgres pool, constructs the scraper and the repository.
-    The caller owns the lifecycle and must call `RunContext.pool.close()`
-    when done (we expose a helper for that).
+    Opens a Postgres pool, constructs the scraper and the
+    repositories. The caller owns the lifecycle and must call
+    `RunContext.pool.close()` when done.
     """
     settings = settings or get_settings()
     pool = await get_pool(settings)
@@ -58,18 +75,61 @@ async def build_app(settings: Settings | None = None) -> RunContext:
         max_cards=settings.ingest_max_listings,
     )
     repo = PostgresApartmentRepository(pool)
-    return RunContext(settings=settings, pool=pool, scraper=scraper, repo=repo)
+    dangerous_repo = PostgresDangerousNeighborhoodRepository(pool)
+    ranking_repo = PostgresRankingRepository(pool)
+    return RunContext(
+        settings=settings,
+        pool=pool,
+        scraper=scraper,
+        repo=repo,
+        dangerous_repo=dangerous_repo,
+        ranking_repo=ranking_repo,
+    )
 
 
-def build_orchestrator_for_cli(ctx: RunContext) -> Any:
-    """Build the orchestrator graph for the CLI's `run` subcommand."""
+def build_notifier_for_cli(ctx: RunContext) -> GmailSmtpNotifier | None:
+    """Build a Gmail SMTP notifier when configured, else return `None`."""
+    if not ctx.settings.has_gmail_smtp:
+        return None
+    return GmailSmtpNotifier(settings=ctx.settings)
+
+
+def build_orchestrator_for_cli(
+    ctx: RunContext, notifier: Any | None = None
+) -> Orchestrator:
+    """Build the composite orchestrator for the CLI's `run` subcommand."""
     llm = build_chat_model_with_fallback(ctx.settings)
-    return build_orchestrator(llm=llm, scraper=ctx.scraper, repo=ctx.repo)
+    from_addr = ctx.settings.gmail_smtp_address
+    to_addr = ctx.settings.notify_to_address or from_addr
+    researcher_search_backend = (
+        ExaSearchBackend(ctx.settings.exa_api_key)
+        if ctx.settings.exa_api_key
+        else None
+    )
+    result: Orchestrator = build_orchestrator(
+        llm=llm,
+        scraper=ctx.scraper,
+        repo=ctx.repo,
+        dangerous_repo=ctx.dangerous_repo,
+        ranking_repo=ctx.ranking_repo,
+        notifier=notifier,
+        from_address=from_addr,
+        to_address=to_addr,
+        weight_distance=ctx.settings.rank_weight_distance,
+        weight_pet_policy=ctx.settings.rank_weight_pet_policy,
+        weight_furnished=ctx.settings.rank_weight_furnished,
+        max_distance_m=ctx.settings.rank_max_distance_m,
+        top_n=ctx.settings.rank_top_n,
+        researcher_search_backend=researcher_search_backend,
+    )
+    return result
 
 
 __all__ = [
     "RunContext",
     "_MIGRATIONS_DIR",
+    "HaversineDistanceProvider",
     "build_app",
+    "build_notifier_for_cli",
     "build_orchestrator_for_cli",
 ]

@@ -27,10 +27,13 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import BackendProtocol
 from langgraph.store.memory import InMemoryStore
 
-# Persistent subtrees (Sprint 1; Sprint 3/4/5 add /ranker/, /notifier/, /memories/).
+# Persistent subtrees (Sprint 1 + Sprint 2; Sprint 3/4/5 add /memories/).
 PERSISTENT_ROUTES: tuple[str, ...] = (
     "/fotocasa_scraper/",
     "/orchestrator/",
+    "/researcher/",
+    "/ranker/",
+    "/notifier/",
 )
 
 

@@ -11,11 +11,34 @@ you leave under `/fotocasa_scraper/`.
    of cards.
 2. For each card that looks promising, call `fetch_listing` to get
    the full normalized apartment.
-3. Call `ingest_apartment` with each apartment's JSON. Track the
+3. **Before calling `ingest_apartment`**, inspect the listing's
+   `description` and `title` and extract two extra fields — the
+   `pet_policy` and the `furnished` flag. Add them to the JSON
+   payload you pass to `ingest_apartment`. The ranker depends on
+   these being populated at ingest time (Sprint 2).
+4. Call `ingest_apartment` with each apartment's JSON. Track the
    inserted/duplicate/filtered counts.
-4. Optionally save raw HTML / extracted JSON to `/fotocasa_scraper/raw/`
+5. Optionally save raw HTML / extracted JSON to `/fotocasa_scraper/raw/`
    and `/fotocasa_scraper/extracted/` for replay.
-5. Return a handoff summary back to the orchestrator.
+6. Return a handoff summary back to the orchestrator.
+
+## Soft-field extraction (added in Sprint 2)
+
+When you call `fetch_listing`, the JSON includes a `description`
+field. Read it. Add the following two keys to the payload you pass
+to `ingest_apartment`:
+
+- `pet_policy`: one of `allowed`, `negotiated`, `not_allowed`,
+  `unknown`. Map the description to this enum literally; do not
+  invent intermediate values.
+- `furnished`: one of `true`, `false`, `unknown`. `true` means
+  the listing is advertised as furnished / "amueblado". `false`
+  means it explicitly says unfurnished / "sin amueblar". `unknown`
+  is the default when neither is mentioned.
+
+If the description is short or missing, output `unknown` for both.
+Do NOT skip the keys. The ranker relies on the column being present
+(even if null is acceptable for the value).
 
 ## Tools you have
 
@@ -49,7 +72,10 @@ Your handoff summary must include, in plain text:
 - `inserted: <int>` — how many rows the repository reported as inserted.
 - `duplicates: <int>` — how many the repository reported as duplicates.
 - `filtered: <int>` — how many detail rows failed hard filters and were dropped.
-- `errors: <list[str>]` — per-listing error messages, if any.
+- `soft_extracted: <int>` — how many of the `details_fetched` rows
+  had `pet_policy` and `furnished` populated (i.e. neither
+  description was empty).
+- `errors: <list[str]>` — per-listing error messages, if any.
 
 You stop when either you've ingested up to the orchestrator's cap, or
 your search returned nothing new, or you've encountered 3 consecutive

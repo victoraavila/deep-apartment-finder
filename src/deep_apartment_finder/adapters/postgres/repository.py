@@ -27,9 +27,11 @@ from deep_apartment_finder.ports.apartment_repository import (
 _UPSERT_SQL = """
 INSERT INTO apartments (
     source, external_id, url, title, price_eur, rooms, bathrooms,
-    size_m2, address, lat, lng, description, pet_policy, raw_json, scraped_at
+    size_m2, address, lat, lng, description, pet_policy, furnished,
+    raw_json, scraped_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+    $15::jsonb, $16
 )
 ON CONFLICT (source, external_id) DO NOTHING
 RETURNING id
@@ -49,7 +51,8 @@ FROM (
 
 _RECENT_SQL = """
 SELECT id, source, external_id, url, title, price_eur, rooms, bathrooms,
-       size_m2, address, lat, lng, description, pet_policy, raw_json, scraped_at
+       size_m2, address, lat, lng, description, pet_policy, furnished,
+       raw_json, scraped_at
 FROM apartments
 ORDER BY scraped_at DESC
 LIMIT $1
@@ -78,6 +81,7 @@ def _row_to_apartment(row: asyncpg.Record) -> Apartment:
         lng=row["lng"],
         description=row["description"],
         pet_policy=row["pet_policy"],
+        furnished=row["furnished"],
         raw=raw_json or {},
         scraped_at=row["scraped_at"],
     )
@@ -115,6 +119,7 @@ class PostgresApartmentRepository(ApartmentRepository):
                 d["lng"],
                 d["description"],
                 d["pet_policy"],
+                d["furnished"],
                 json.dumps(d["raw_json"], default=_json_default),
                 scraped_at,
             )
@@ -142,6 +147,25 @@ class PostgresApartmentRepository(ApartmentRepository):
         # runner and the composition root owns its lifecycle. Closing it
         # would force every other consumer to acquire a fresh pool.
         return None
+
+    async def list_all(
+        self, limit: int = 5000
+    ) -> list[tuple[int, Apartment]]:
+        """Return every stored apartment (capped at `limit`).
+
+        The ranker consumes this. The cap is a safety belt for the
+        first few runs; the ranker sorts + takes the top N from
+        whatever it gets, so the cap doesn't change correctness.
+        """
+        sql = (
+            "SELECT id, source, external_id, url, title, price_eur, rooms, "
+            "bathrooms, size_m2, address, lat, lng, description, pet_policy, "
+            "furnished, raw_json, scraped_at "
+            "FROM apartments ORDER BY scraped_at DESC LIMIT $1"
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, limit)
+        return [(int(r["id"]), _row_to_apartment(r)) for r in rows]
 
 
 def _json_default(obj: object) -> str:

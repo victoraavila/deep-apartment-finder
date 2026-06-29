@@ -14,7 +14,7 @@ import base64
 import binascii
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from deep_apartment_finder.domain.apartment import Apartment
 from deep_apartment_finder.domain.source import Source
@@ -43,25 +43,32 @@ def decode_response_body(raw: str | bytes) -> dict[str, Any]:
     """
     if isinstance(raw, (bytes, bytearray)):
         try:
-            return json.loads(raw.decode("utf-8"))
+            return _loads_dict(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raw = base64.b64decode(bytes(raw)).decode("utf-8")
-            return json.loads(raw)
+            return _loads_dict(raw)
 
     text = raw.strip()
     if not text:
         raise ValueError("empty response body")
     try:
-        return json.loads(text)
+        return _loads_dict(text)
     except json.JSONDecodeError:
         pass
     # Try base64. We do not strip whitespace because Fotocasa's blob is
     # one long unbroken string; if there is whitespace it is JSON.
     try:
         decoded = base64.b64decode(text, validate=True).decode("utf-8")
-        return json.loads(decoded)
+        return _loads_dict(decoded)
     except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
         raise ValueError(f"could not parse response as JSON or base64: {exc}") from exc
+
+
+def _loads_dict(text: str) -> dict[str, Any]:
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("response body is not a JSON object")
+    return cast(dict[str, Any], data)
 
 
 # ---------------------------------------------------------------------------
