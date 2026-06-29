@@ -104,6 +104,19 @@ non-breaking change.
   filesystem report writes. The trace should expose state transitions,
   counts, input/output summaries, errors, retries, and skip reasons so the
   operator can reconstruct what happened even for deterministic code paths.
+- **Ranked result explainability:** the CLI, persisted run report, and email
+  must show the actual ranked apartments, not just database ids. Every top-N
+  row should include title, price, rooms/bathrooms/size, address, URL,
+  final score, and per-criterion score details so the operator can inspect
+  the result without opening SQL.
+- **Listing data quality before ranking:** invalid coordinates such as
+  `(0, 0)` must be normalized to missing values, never treated as real
+  locations. The ranker should not award a high distance-to-dangerous score
+  when latitude/longitude are missing or invalid; the ingest/scraper path
+  should aim to populate coordinates for every listing when the source
+  exposes them. Duplicate listings should also be refreshed/backfilled with
+  newly extracted soft fields (`pet_policy`, `furnished`) and corrected
+  coordinates instead of leaving old rows with stale NULLs.
 
 ## Sprints — abstract view
 
@@ -126,7 +139,14 @@ Decisions Q3, Q4, Q5 are resolved at the start of this sprint.
 First make the full daily run observable: structured CLI phase output plus
 LangSmith tracing that covers LLM calls and deterministic states alike
 (database operations, scraper HTTP, ranking, notification rendering, SMTP,
-dedup skips, and report writes). Then add a second adapter under
+dedup skips, and report writes). Make ranked results explainable in the
+terminal, run report, and email by including apartment title, price,
+rooms/bathrooms/size, address, URL, final score, and score breakdown for
+each top-N row. Tighten listing quality before ranking: treat `(0, 0)` and
+other invalid coordinates as missing, avoid rewarding missing/invalid
+coordinates in the distance criterion, backfill duplicate rows with newly
+available soft fields and corrected coordinates, and validate coordinate
+coverage in `validate-quality`. Then add a second adapter under
 `adapters/scrapers/` following the same `ScraperPort` (OCP: no changes to
 Fotocasa or the orchestrator). Candidate order: another easy portal first;
 Idealista with SSR/CSR + stealth strategy if Fotocasa alone is insufficient.
