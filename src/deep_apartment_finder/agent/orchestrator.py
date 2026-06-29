@@ -212,6 +212,7 @@ class _DeterministicSteps:
             await self._observer.waiting("Postgres")
             await self._observer.phase_start("ranker")
         start = time.monotonic()
+        ranking: dict[str, Any] | None = None
         try:
             ranking = await compute_ranking(
                 rankables=rankables,
@@ -227,16 +228,23 @@ class _DeterministicSteps:
         finally:
             if self._observer is not None:
                 duration_ms = int((time.monotonic() - start) * 1000)
-                await self._observer.end_phase(
-                    "ranker",
-                    duration_ms=duration_ms,
-                    counts={
+                counts: dict[str, int] = {}
+                errors = 1
+                if ranking is not None:
+                    errors = 0
+                    counts = {
                         "apartments_scored": ranking["apartments_scored"],
                         "scores_written": ranking["scores_written"],
                         "top_n_returned": len(ranking["top"]),
                         "dedup_dropped": ranking.get("dedup_dropped", 0),
-                    },
+                    }
+                await self._observer.phase_end(
+                    "ranker",
+                    duration_ms=duration_ms,
+                    counts=counts,
+                    errors=errors,
                 )
+        assert ranking is not None
         return ranking
 
     @trace("deterministic.notifier", metadata={"phase": "notifier"})
@@ -249,6 +257,7 @@ class _DeterministicSteps:
             await self._observer.phase_start("notifier")
         start = time.monotonic()
         notification = None
+        errors = 0
         try:
             if self._notifier is not None and self._from_address and self._to_address:
                 if self._observer is not None:
@@ -276,14 +285,17 @@ class _DeterministicSteps:
                     await self._observer.decision(
                         "notifier", "skipped: notifier not configured"
                     )
+        except Exception:
+            errors = 1
+            raise
         finally:
             if self._observer is not None:
                 duration_ms = int((time.monotonic() - start) * 1000)
                 counts: dict[str, int] = {}
                 if notification is not None:
                     counts["apartment_ids"] = len(notification.apartment_ids)
-                await self._observer.end_phase(
-                    "notifier", duration_ms=duration_ms, counts=counts
+                await self._observer.phase_end(
+                    "notifier", duration_ms=duration_ms, counts=counts, errors=errors
                 )
         return notification
 
@@ -331,7 +343,7 @@ class _DeterministicSteps:
 
         if self._observer is not None:
             await self._observer.count("rows_loaded", len(rows))
-            await self._observer.end_phase(
+            await self._observer.phase_end(
                 "ranker_setup",
                 duration_ms=0,
                 counts={"rows_loaded": len(rows), "filtered_hard_filters": filtered_out},

@@ -99,7 +99,7 @@ scraper subagent sees every listing as `duplicate` or
 | --- | --- |
 | `migrate` | Apply pending SQL migrations (001 + 002 + 003). |
 | `run` | Drive the orchestrator end-to-end. Sprint 3 prints phase headers + counters to **stderr** in real time and persists a structured `RunReport` to `/orchestrator/reports/<run-uuid>.json` and the `run_reports` Postgres table. |
-| `run --trace` | Force-enable LangSmith tracing for a single invocation, overriding `LANGSMITH_TRACING=false`. Prints the trace URL at the end. |
+| `run --trace` | Compatibility flag. Tracing is enabled automatically whenever `LANGSMITH_API_KEY` is configured; without that key tracing stays off. |
 | `validate-quality` | Sprint 3 added: per-source, per-field null rate; count of invalid coordinates; count of cross-portal dedup-key collisions. |
 | `list-dangerous` | Print the bootstrapped dangerous-neighborhoods table. |
 | `show-run <run-uuid>` | Re-print a persisted run report (Sprint 3 Pillar A). |
@@ -144,8 +144,8 @@ Decisions: [`docs/adr/`](docs/adr/).
   page, each `fetch_listing`, each `ingest_apartment`, every
   Postgres read/write, `compute_ranking` (with per-criterion
   child spans), `render_email`, `send_email`, the dedup-skip
-  path, and the report writes. The `--trace` CLI flag
-  force-enables for a single invocation.
+  path, and the report writes. Tracing is enabled automatically
+  whenever `LANGSMITH_API_KEY` is configured.
 - **Ranked result explainability (Pillar C).** The CLI stdout,
   the persisted run report, and the email body all show, for
   each top-N row: `title`, `price_eur`, `rooms`, `bathrooms`,

@@ -42,9 +42,10 @@ Three layers, each additive to the previous:
      the `run_reports` Postgres table.
    - `tracing.py` — a thin `langsmith.run_helpers.traceable`
      wrapper (`@trace(name, **metadata)`). Gated on
-     `settings.langsmith_tracing`; when off, the decorator is a
-     pass-through with a single bool check. The CLI exposes a
-     `--trace` flag to force-enable for a single invocation.
+     `LANGSMITH_API_KEY`: when the key is configured, tracing is
+     enabled automatically; when it is absent, the decorator is a
+     pass-through with a single bool check. The CLI still accepts
+     `--trace` as a compatibility flag, but the key is required.
 3. **`RunReport` (`domain/run_report.py`)** — a pure value object
    with `start_phase`, `end_phase`, `add_count`, `note`,
    `set_top_n`, `set_dedup_dropped`, `set_criterion_distribution`,

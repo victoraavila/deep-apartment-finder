@@ -174,3 +174,25 @@ async def test_recording_observer_finalize_swallows_write_errors() -> None:
 async def test_recording_observer_can_be_typed_as_run_observer() -> None:
     obs: RunObserver = RecordingRunObserver()
     assert isinstance(obs, RunObserver)
+
+
+@pytest.mark.asyncio
+async def test_cli_fanout_records_cli_owned_phases() -> None:
+    """CLI-owned phases must be persisted, not only printed to stderr."""
+    from deep_apartment_finder.cli import _FanOutObserver
+
+    lines: list[str] = []
+    cli = CliRunObserver(write=lines.append)
+    recording = RecordingRunObserver(run_id="r-1")
+    fanout = _FanOutObserver([cli, recording])
+
+    await fanout.phase_start("setup", run_id="r-1")
+    await fanout.decision("LangSmith tracing", "on")
+    await fanout.phase_end("setup", duration_ms=7)
+
+    assert lines[0] == "=== setup ===  run_id=r-1"
+    setup = recording.report.phase("setup")
+    assert setup is not None
+    assert setup.duration_ms == 7
+    assert setup.meta == {"run_id": "r-1"}
+    assert recording.report.notes[0].label == "LangSmith tracing"

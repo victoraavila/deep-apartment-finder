@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import sys
 import uuid
 from typing import Any
@@ -36,8 +35,10 @@ from deep_apartment_finder.adapters.observability.recording_observer import (
     RecordingRunObserver,
 )
 from deep_apartment_finder.adapters.observability.tracing import (
+    configure_langsmith_from_settings,
     current_trace_url,
     langsmith_tracing_enabled,
+    root_trace,
 )
 from deep_apartment_finder.adapters.postgres.migrations import apply_migrations
 from deep_apartment_finder.config import get_settings
@@ -120,9 +121,9 @@ def run(
         False,
         "--trace",
         help=(
-            "Force-enable LangSmith tracing for this single run, "
-            "overriding `LANGSMITH_TRACING=false`. Prints the trace "
-            "URL at the end of the run."
+            "Compatibility flag. LangSmith tracing is enabled automatically "
+            "when LANGSMITH_API_KEY is configured; without that key tracing "
+            "stays off."
         ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="DEBUG logging"),
@@ -145,10 +146,8 @@ def run(
     tracing is on.
     """
     _configure_logging(verbose)
-    if trace:
-        # Toggle the env var so the LangSmith SDK picks it up.
-        os.environ["LANGSMITH_TRACING"] = "true"
     settings = get_settings()
+    configure_langsmith_from_settings(settings, force=trace)
 
     async def _run() -> dict[str, Any]:
         run_id = str(uuid.uuid4())
@@ -156,94 +155,96 @@ def run(
         recording_observer = RecordingRunObserver(run_id=run_id)
         # Fan-out: every event lands in both observers.
         observers: list[RunObserver] = [cli_observer, recording_observer]
-        await cli_observer.phase_start("setup", run_id=run_id)
-        await cli_observer.decision(
-            "LangSmith tracing",
-            "on" if langsmith_tracing_enabled() else "off",
-        )
-
-        ctx = await build_app(settings)
-        try:
-            orchestrator = build_orchestrator_for_cli(
-                ctx,
-                notifier=build_notifier_for_cli(ctx),
-                observer=_FanOutObserver(observers),
+        observer = _FanOutObserver(observers)
+        with root_trace("cli.run", metadata={"run_id": run_id, "skip_llm": skip_llm}):
+            await observer.phase_start("setup", run_id=run_id)
+            await observer.decision(
+                "LangSmith tracing",
+                "on" if langsmith_tracing_enabled() else "off",
             )
-            await cli_observer.end_phase("setup", duration_ms=0)
 
-            # 1. First-run gate: check if the dangerous-neighborhoods
-            #    table is empty. If so, the LLM has to decide whether
-            #    to call the researcher subagent. We short-circuit
-            #    here when the gate has already been satisfied AND
-            #    the user passed --skip-llm.
-            count = await ctx.dangerous_repo.count()
-            if count == 0 and not skip_llm:
-                # Let the LLM drive the first run (it will call
-                # `researcher` via `task`, then stop).
-                await cli_observer.phase_start(
-                    "researcher",
-                    note="first run: bootstrapping dangerous_neighborhoods",
+            ctx = await build_app(settings)
+            try:
+                orchestrator = build_orchestrator_for_cli(
+                    ctx,
+                    notifier=build_notifier_for_cli(ctx),
+                    observer=observer,
                 )
-                config = {"configurable": {"thread_id": run_id}}
-                prompt = _build_first_run_prompt(settings)
-                result = await orchestrator.ainvoke(
-                    {"messages": [{"role": "user", "content": prompt}]},
-                    config=config,
-                )
-                await cli_observer.decision(
-                    "researcher",
-                    "first run: operator must re-run after eyeballing the list",
-                )
-                await cli_observer.end_phase(
-                    "researcher", duration_ms=0, errors=0
-                )
-                summary = _summarize_llm_result(result, deterministic=None)
+                await observer.phase_end("setup", duration_ms=0)
+
+                # 1. First-run gate: check if the dangerous-neighborhoods
+                #    table is empty. If so, the LLM has to decide whether
+                #    to call the researcher subagent. We short-circuit
+                #    here when the gate has already been satisfied AND
+                #    the user passed --skip-llm.
+                count = await ctx.dangerous_repo.count()
+                if count == 0 and not skip_llm:
+                    # Let the LLM drive the first run (it will call
+                    # `researcher` via `task`, then stop).
+                    await observer.phase_start(
+                        "researcher",
+                        note="first run: bootstrapping dangerous_neighborhoods",
+                    )
+                    config = {"configurable": {"thread_id": run_id}}
+                    prompt = _build_first_run_prompt(settings)
+                    result = await orchestrator.ainvoke(
+                        {"messages": [{"role": "user", "content": prompt}]},
+                        config=config,
+                    )
+                    await observer.decision(
+                        "researcher",
+                        "first run: operator must re-run after eyeballing the list",
+                    )
+                    await observer.phase_end(
+                        "researcher", duration_ms=0, errors=0
+                    )
+                    summary = _summarize_llm_result(result, deterministic=None)
+                    return await _finalize_run(
+                        summary=summary,
+                        cli_observer=cli_observer,
+                        recording_observer=recording_observer,
+                        ctx=ctx,
+                    )
+
+                if count == 0 and skip_llm:
+                    typer.echo(
+                        "dangerous_neighborhoods is empty; the researcher "
+                        "subagent must run first. Re-run without --skip-llm.",
+                        err=True,
+                    )
+                    raise typer.Exit(code=2)
+
+                # 2. LLM part (scrapers) — unless --skip-llm.
+                if not skip_llm:
+                    await observer.phase_start("scraper")
+                    await observer.waiting("LLM")
+                    config = {"configurable": {"thread_id": run_id}}
+                    prompt = _build_subsequent_run_prompt(settings)
+                    await orchestrator.ainvoke(
+                        {"messages": [{"role": "user", "content": prompt}]},
+                        config=config,
+                    )
+                    await observer.phase_end("scraper", duration_ms=0)
+
+                # 3. Deterministic part (ranker + notifier).
+                await observer.phase_start("deterministic_tail")
+                deterministic = await orchestrator.deterministic.run()
+                await observer.phase_end("deterministic_tail", duration_ms=0)
+                summary = _summarize_llm_result(None, deterministic=deterministic)
                 return await _finalize_run(
                     summary=summary,
                     cli_observer=cli_observer,
                     recording_observer=recording_observer,
                     ctx=ctx,
                 )
-
-            if count == 0 and skip_llm:
-                typer.echo(
-                    "dangerous_neighborhoods is empty; the researcher "
-                    "subagent must run first. Re-run without --skip-llm.",
-                    err=True,
-                )
-                raise typer.Exit(code=2)
-
-            # 2. LLM part (scrapers) — unless --skip-llm.
-            if not skip_llm:
-                await cli_observer.phase_start("scraper")
-                await cli_observer.waiting("LLM")
-                config = {"configurable": {"thread_id": run_id}}
-                prompt = _build_subsequent_run_prompt(settings)
-                await orchestrator.ainvoke(
-                    {"messages": [{"role": "user", "content": prompt}]},
-                    config=config,
-                )
-                await cli_observer.end_phase("scraper", duration_ms=0)
-
-            # 3. Deterministic part (ranker + notifier).
-            await cli_observer.phase_start("deterministic_tail")
-            deterministic = await orchestrator.deterministic.run()
-            await cli_observer.end_phase("deterministic_tail", duration_ms=0)
-            summary = _summarize_llm_result(None, deterministic=deterministic)
-            return await _finalize_run(
-                summary=summary,
-                cli_observer=cli_observer,
-                recording_observer=recording_observer,
-                ctx=ctx,
-            )
-        finally:
-            await ctx.scraper.close()
-            if ctx.idealista_scraper is not None:
-                try:
-                    await ctx.idealista_scraper.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            await ctx.pool.close()
+            finally:
+                await ctx.scraper.close()
+                if ctx.idealista_scraper is not None:
+                    try:
+                        await ctx.idealista_scraper.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                await ctx.pool.close()
 
     try:
         summary = asyncio.run(_run())
