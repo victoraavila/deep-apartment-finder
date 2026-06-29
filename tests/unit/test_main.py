@@ -44,6 +44,7 @@ def test_build_orchestrator_for_cli_is_synchronous(monkeypatch: Any) -> None:
         repo=InMemoryApartmentRepository(),
         dangerous_repo=InMemoryDangerousNeighborhoodRepository(),
         ranking_repo=InMemoryRankingRepository(),
+        observability_backend=object(),
     )
 
     result = build_orchestrator_for_cli(ctx)
@@ -75,6 +76,7 @@ def test_build_orchestrator_for_cli_wires_exa_key_to_researcher(monkeypatch: Any
         repo=InMemoryApartmentRepository(),
         dangerous_repo=InMemoryDangerousNeighborhoodRepository(),
         ranking_repo=InMemoryRankingRepository(),
+        observability_backend=object(),
     )
 
     build_orchestrator_for_cli(ctx)

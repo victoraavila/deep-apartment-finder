@@ -1,9 +1,11 @@
 """`ingest_apartment` tool.
 
-The orchestrator's `fotocasa_scraper` subagent calls this to persist
-a normalized listing. The tool returns a small JSON object that the
-LLM can use to track progress: the resulting id on insert, or the
-external_id on duplicate (acceptance criterion 3).
+The orchestrator's scraper subagents (`fotocasa_scraper`,
+`idealista_scraper`) call this to persist a normalized listing. The
+tool returns a small JSON object that the LLM can use to track
+progress: the resulting id on insert, the apartment id and the
+backfilled fields on update, or the external_id on duplicate
+(acceptance criterion 3).
 """
 
 from __future__ import annotations
@@ -15,16 +17,29 @@ from langchain_core.tools import BaseTool, tool
 
 from deep_apartment_finder.domain.apartment import Apartment
 from deep_apartment_finder.domain.filters.hard import HardFilters
+from deep_apartment_finder.domain.geo import (
+    compute_dedup_key,
+    is_valid_coordinate,
+)
 from deep_apartment_finder.domain.source import Source
-from deep_apartment_finder.ports.apartment_repository import ApartmentRepository
+from deep_apartment_finder.ports.apartment_repository import (
+    ApartmentRepository,
+    Inserted,
+    Updated,
+)
 
 
 def make_ingest_apartment_tool(repo: ApartmentRepository) -> BaseTool:
     """Build the `ingest_apartment` tool bound to a specific repository.
 
     The tool accepts a JSON-stringified apartment payload (the parser
-    produces one) and persists it. It never raises on duplicate; it
-    returns `{ "status": "duplicate", ... }` instead.
+    produces one) and persists it. It never raises on duplicate or
+    backfill; it returns the corresponding `status` instead.
+
+    Sprint 3: also computes and stamps the cross-portal `dedup_key`
+    on the apartment's `raw` blob before persisting, and drops
+    invalid coordinates (`(0, 0)` / out-of-bbox) to `None` so the
+    ranker never rewards a placeholder.
     """
 
     @tool
@@ -45,6 +60,7 @@ def make_ingest_apartment_tool(repo: ApartmentRepository) -> BaseTool:
 
         Returns a JSON object:
             {"status": "inserted", "id": <int>}
+            {"status": "updated", "id": <int>, "changed_fields": [<str>, ...]}
             {"status": "duplicate", "external_id": <str>}
             {"status": "filtered", "external_id": <str>, "reason": <str>}
         """
@@ -58,6 +74,35 @@ def make_ingest_apartment_tool(repo: ApartmentRepository) -> BaseTool:
             url = str(data["url"])
         except KeyError as exc:
             return json.dumps({"status": "error", "message": f"missing field: {exc}"})
+
+        # Sprint 3 — drop invalid coordinates (Pillar D). The scraper
+        # might leave (0, 0) or a far-flung placeholder; the DB must
+        # hold NULL, not a fake value, so the ranker's distance
+        # criterion can do the right thing.
+        if "lat" in data or "lng" in data:
+            lat = data.get("lat")
+            lng = data.get("lng")
+            if not is_valid_coordinate(lat, lng):
+                data["lat"] = None
+                data["lng"] = None
+
+        # Sprint 3 — compute the cross-portal dedup_key and stamp it
+        # on the raw blob. The Postgres repository reads the key
+        # from `apartment.raw["dedup_key"]`; the in-memory fake does
+        # the same.
+        if isinstance(data.get("raw"), dict):
+            raw = dict(data["raw"])
+        else:
+            raw = {}
+        dedup_key = compute_dedup_key(
+            address=data.get("address"),
+            rooms=data.get("rooms"),
+            size_m2=data.get("size_m2"),
+            price_eur=data.get("price_eur"),
+        )
+        if dedup_key is not None:
+            raw["dedup_key"] = dedup_key
+        data["raw"] = raw
 
         apartment = Apartment.from_raw_dict(source, external_id, url, data)
         filters = HardFilters(
@@ -76,8 +121,16 @@ def make_ingest_apartment_tool(repo: ApartmentRepository) -> BaseTool:
                 }
             )
         result = await repo.upsert(apartment)
-        if hasattr(result, "apartment_id"):
+        if isinstance(result, Inserted):
             return json.dumps({"status": "inserted", "id": result.apartment_id})
+        if isinstance(result, Updated):
+            return json.dumps(
+                {
+                    "status": "updated",
+                    "id": result.apartment_id,
+                    "changed_fields": list(result.changed_fields),
+                }
+            )
         return json.dumps({"status": "duplicate", "external_id": result.external_id})
 
     return ingest_apartment

@@ -7,7 +7,8 @@ through `main.py`.
 Two build functions:
 - `build_app()` returns a `RunContext` carrying every dependency the
   CLI needs (settings, pool, scraper, repo, llm, plus the Sprint 2
-  dangerous-neighborhood, ranking, and notifier deps).
+  dangerous-neighborhood, ranking, and notifier deps, plus the
+  Sprint 3 observability backend).
 - `build_orchestrator_for_cli(...)` returns the composite orchestrator
   (LLM graph + deterministic steps) the CLI's `run` subcommand uses.
 """
@@ -40,12 +41,14 @@ from deep_apartment_finder.adapters.scrapers.idealista.scraper import (
 )
 from deep_apartment_finder.agent.orchestrator import Orchestrator, build_orchestrator
 from deep_apartment_finder.config import Settings, get_settings
+from deep_apartment_finder.filesystem.routes import build_backend
 from deep_apartment_finder.llm import build_chat_model_with_fallback
 from deep_apartment_finder.ports.apartment_repository import ApartmentRepository
 from deep_apartment_finder.ports.dangerous_neighborhood_repository import (
     DangerousNeighborhoodRepository,
 )
 from deep_apartment_finder.ports.ranking_repository import RankingRepository
+from deep_apartment_finder.ports.run_observer import RunObserver
 from deep_apartment_finder.ports.scraper import ScraperPort
 from deep_apartment_finder.tools.researcher.web_search import ExaSearchBackend
 
@@ -63,6 +66,11 @@ class RunContext:
     repo: ApartmentRepository
     dangerous_repo: DangerousNeighborhoodRepository
     ranking_repo: RankingRepository
+    # Sprint 3 (Pillar A): the `CompositeBackend` the CLI uses to
+    # persist the run report JSON. Lives here so the CLI can hand
+    # the same backend the orchestrator uses for `/orchestrator/`
+    # writes to the `RecordingRunObserver.finalize(...)` call.
+    observability_backend: Any = None
 
 
 async def build_app(settings: Settings | None = None) -> RunContext:
@@ -95,6 +103,7 @@ async def build_app(settings: Settings | None = None) -> RunContext:
         repo=repo,
         dangerous_repo=dangerous_repo,
         ranking_repo=ranking_repo,
+        observability_backend=build_backend(),
     )
 
 
@@ -106,9 +115,18 @@ def build_notifier_for_cli(ctx: RunContext) -> GmailSmtpNotifier | None:
 
 
 def build_orchestrator_for_cli(
-    ctx: RunContext, notifier: Any | None = None
+    ctx: RunContext,
+    notifier: Any | None = None,
+    observer: RunObserver | None = None,
 ) -> Orchestrator:
-    """Build the composite orchestrator for the CLI's `run` subcommand."""
+    """Build the composite orchestrator for the CLI's `run` subcommand.
+
+    `observer` is the optional `RunObserver` the deterministic
+    steps emit events through (Pillar A). The CLI passes a
+    fan-out of `CliRunObserver` + `RecordingRunObserver` so the
+    operator sees progress in stderr *and* the run report is
+    persisted.
+    """
     llm = build_chat_model_with_fallback(ctx.settings)
     from_addr = ctx.settings.gmail_smtp_address
     to_addr = ctx.settings.notify_to_address or from_addr
@@ -133,6 +151,7 @@ def build_orchestrator_for_cli(
         max_distance_m=ctx.settings.rank_max_distance_m,
         top_n=ctx.settings.rank_top_n,
         researcher_search_backend=researcher_search_backend,
+        observer=observer,
     )
     return result
 
