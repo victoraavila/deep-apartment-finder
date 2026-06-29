@@ -9,9 +9,12 @@ callable and preserves the static metadata).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from deep_apartment_finder.adapters.observability.tracing import (
+    configure_langsmith_from_settings,
     current_trace_url,
     langsmith_tracing_enabled,
     trace,
@@ -22,6 +25,7 @@ from deep_apartment_finder.adapters.observability.tracing import (
 def _reset_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test sets the env explicitly; the fixture strips any
     leftover value from a previous test."""
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
     monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
 
@@ -34,6 +38,7 @@ def test_langsmith_tracing_enabled_default_is_false() -> None:
 def test_langsmith_tracing_enabled_truthy_values(
     monkeypatch: pytest.MonkeyPatch, val: str
 ) -> None:
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
     monkeypatch.setenv("LANGSMITH_TRACING", val)
     assert langsmith_tracing_enabled() is True
 
@@ -42,7 +47,33 @@ def test_langsmith_tracing_enabled_truthy_values(
 def test_langsmith_tracing_enabled_falsy_values(
     monkeypatch: pytest.MonkeyPatch, val: str
 ) -> None:
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
     monkeypatch.setenv("LANGSMITH_TRACING", val)
+    assert langsmith_tracing_enabled() is False
+
+
+def test_langsmith_tracing_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    assert langsmith_tracing_enabled() is False
+
+
+def test_configure_langsmith_enables_tracing_when_key_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        langsmith_api_key="from-settings",
+        langsmith_project="deep-apartment-finder-test",
+    )
+    assert configure_langsmith_from_settings(settings) is True
+    assert langsmith_tracing_enabled() is True
+
+
+def test_configure_langsmith_disables_tracing_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    settings = SimpleNamespace(langsmith_api_key=None, langsmith_project="x")
+    assert configure_langsmith_from_settings(settings, force=True) is False
     assert langsmith_tracing_enabled() is False
 
 
@@ -58,6 +89,41 @@ def test_trace_decorator_is_passthrough_when_disabled(
     # Passthrough: the function still works, no exception, no
     # LangSmith call attempted.
     assert add(1, 2) == 3
+
+
+def test_trace_decorator_checks_tracing_at_call_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import langsmith.run_helpers as run_helpers
+
+    calls: list[dict[str, object]] = []
+
+    def fake_traceable(**kwargs: object) -> object:
+        def _decorator(fn: object) -> object:
+            def _wrapped(*args: object, **kw: object) -> object:
+                calls.append(kwargs)
+                return fn(*args, **kw)  # type: ignore[misc]
+
+            return _wrapped
+
+        return _decorator
+
+    monkeypatch.setattr(run_helpers, "traceable", fake_traceable)
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+
+    @trace("foo", metadata={"k": "v"})
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    assert add(1, 2) == 3
+    assert calls == []
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    assert add(1, 2) == 3
+    assert calls == [
+        {"name": "foo", "run_type": "chain", "metadata": {"k": "v"}}
+    ]
 
 
 @pytest.mark.asyncio

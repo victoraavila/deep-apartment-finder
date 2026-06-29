@@ -103,13 +103,13 @@ shippable; the order below is the suggested implementation sequence.
   apartment ids, skip reasons, weights) so the operator can read the
   trace without cross-referencing code. Errors and retries are
   recorded as span events.
-- Tracing is **gated** on `settings.langsmith_tracing` (already
-  present in `config.py`); when off, the decorators are no-ops with
-  negligible overhead. The CLI prints the LangSmith trace URL at the
-  end of the run when tracing is on.
-- A `--trace` CLI flag on `run` force-enables tracing for a single
-  invocation regardless of the env default (useful for ad-hoc
-  debugging).
+- Tracing is **mandatory when `LANGSMITH_API_KEY` is configured**.
+  When the key is absent, the decorators are no-ops with negligible
+  overhead. The CLI prints the LangSmith trace URL at the end of the
+  run when tracing is on.
+- A `--trace` CLI flag remains accepted for compatibility, but it
+  cannot enable tracing without `LANGSMITH_API_KEY`; a configured
+  key enables tracing by default.
 
 #### Pillar C — Ranked result explainability
 - The top-N ranked apartments are shown **with their fields** in
@@ -543,7 +543,8 @@ runs (web search + upsert) and stops before `scraper`.
   - ADR-012 — Cross-portal dedup key (deterministic hash,
     preparatory for embeddings in S4)
 - `README.md` updated with: the new `show-run` and
-  `backfill-dedup-keys` subcommands, the `--trace` flag, a
+  `backfill-dedup-keys` subcommands, the automatic LangSmith
+  tracing behavior, a
   "What's new in Sprint 3" section, and the second portal's setup
   notes (any env vars Idealista requires, the playwright browser
   install step).
