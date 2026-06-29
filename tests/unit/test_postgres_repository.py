@@ -23,7 +23,11 @@ from deep_apartment_finder.adapters.postgres.repository import (
 )
 from deep_apartment_finder.domain.apartment import Apartment
 from deep_apartment_finder.domain.source import Source
-from deep_apartment_finder.ports.apartment_repository import Duplicate, Inserted
+from deep_apartment_finder.ports.apartment_repository import (
+    Duplicate,
+    Inserted,
+    Updated,
+)
 
 
 class _FakeTransaction:
@@ -79,8 +83,8 @@ class _FakePool:
         return _Ctx()
 
 
-def _make_apartment() -> Apartment:
-    return Apartment(
+def _make_apartment(**kwargs: Any) -> Apartment:
+    base: dict[str, Any] = dict(
         source=Source.FOTOCASA,
         external_id="abc-1",
         url="https://fotocasa.es/abc-1",
@@ -93,12 +97,14 @@ def _make_apartment() -> Apartment:
         description="3-bedroom, 2-bath",
         raw={"soup": "raw payload"},
     )
+    base.update(kwargs)
+    return Apartment(**base)
 
 
 @pytest.mark.asyncio
 async def test_upsert_sends_parameters_in_documented_order():
     pool = _FakePool()
-    pool.queued_fetchrow.append({"id": 42})
+    pool.queued_fetchrow.append({"id": 42, "inserted": True})
     repo = PostgresApartmentRepository(pool)
 
     apt = _make_apartment()
@@ -109,11 +115,13 @@ async def test_upsert_sends_parameters_in_documented_order():
     # The first queued fetchrow call should be the upsert.
     assert len(pool.calls) == 1
     sql, args = pool.calls[0]
-    assert "ON CONFLICT (source, external_id) DO NOTHING" in sql
+    assert "ON CONFLICT (source, external_id) DO UPDATE" in sql
+    assert "COALESCE" in sql
+    assert "IS DISTINCT FROM" in sql
     assert "RETURNING id" in sql
     # Source, external_id, url, title, price_eur, rooms, bathrooms,
     # size_m2, address, lat, lng, description, pet_policy, furnished,
-    # raw_json, scraped_at
+    # raw_json, scraped_at, dedup_key
     assert args[0] == "fotocasa"
     assert args[1] == "abc-1"
     assert args[2] == "https://fotocasa.es/abc-1"
@@ -137,17 +145,61 @@ async def test_upsert_sends_parameters_in_documented_order():
     from datetime import datetime as _dt
 
     assert isinstance(args[15], _dt)
+    # dedup_key (new in Sprint 3)
+    assert args[16] is None  # no dedup_key in the raw blob
 
 
 @pytest.mark.asyncio
 async def test_upsert_returns_duplicate_when_no_row_returned():
     pool = _FakePool()
-    pool.queued_fetchrow.append(None)  # ON CONFLICT DO NOTHING returns 0 rows
+    pool.queued_fetchrow.append(None)  # WHERE matched 0 rows
     repo = PostgresApartmentRepository(pool)
 
     result = await repo.upsert(_make_apartment())
     assert isinstance(result, Duplicate)
     assert result.external_id == "abc-1"
+
+
+@pytest.mark.asyncio
+async def test_upsert_returns_updated_when_backfillable_field_changed():
+    """Sprint 3: a re-scrape that backfills `pet_policy` must surface
+    as `Updated`, not `Duplicate`."""
+    pool = _FakePool()
+    # The RETURNING row includes the post-update values + the
+    # `inserted` flag. The adapter compares the persisted values to
+    # the input to determine which fields actually changed.
+    pool.queued_fetchrow.append(
+        {
+            "id": 42,
+            "inserted": False,
+            "pet_policy": "allowed",
+            "furnished": None,
+            "lat": None,
+            "lng": None,
+            "description": "3-bedroom, 2-bath",
+        }
+    )
+    repo = PostgresApartmentRepository(pool)
+
+    apt = _make_apartment(pet_policy="allowed")
+    result = await repo.upsert(apt)
+    assert isinstance(result, Updated)
+    assert result.apartment_id == 42
+    assert "pet_policy" in result.changed_fields
+
+
+@pytest.mark.asyncio
+async def test_upsert_reads_dedup_key_from_raw():
+    """Sprint 3: the repository's `dedup_key` column is populated
+    from `apartment.raw["dedup_key"]`."""
+    pool = _FakePool()
+    pool.queued_fetchrow.append({"id": 1, "inserted": True})
+    repo = PostgresApartmentRepository(pool)
+
+    apt = _make_apartment(raw={"dedup_key": "abc123"})
+    await repo.upsert(apt)
+    sql, args = pool.calls[0]
+    assert args[16] == "abc123"
 
 
 @pytest.mark.asyncio
@@ -173,6 +225,60 @@ async def test_duplicate_key_count_counts_extra_rows_per_key():
 
 
 @pytest.mark.asyncio
+async def test_cross_portal_dup_count_returns_collision_count():
+    pool = _FakePool()
+    pool.queued_fetchrow.append({"n": 3})
+    repo = PostgresApartmentRepository(pool)
+    n = await repo.cross_portal_dup_count()
+    assert n == 3
+    sql, _ = pool.calls[0]
+    assert "dedup_key" in sql
+
+
+@pytest.mark.asyncio
+async def test_field_coverage_reports_per_source_per_field_rates():
+    pool = _FakePool()
+    pool.queued_fetch.append(
+        [
+            {
+                "source": "fotocasa",
+                "lat": None,
+                "lng": None,
+                "pet_policy": "allowed",
+                "furnished": "true",
+                "description": "x",
+            },
+            {
+                "source": "fotocasa",
+                "lat": Decimal("0"),
+                "lng": Decimal("0"),  # invalid (0, 0)
+                "pet_policy": None,
+                "furnished": None,
+                "description": "y",
+            },
+            {
+                "source": "idealista",
+                "lat": None,
+                "lng": None,
+                "pet_policy": None,
+                "furnished": None,
+                "description": None,
+            },
+        ]
+    )
+    repo = PostgresApartmentRepository(pool)
+    cov = await repo.field_coverage()
+    assert "fotocasa" in cov
+    assert "idealista" in cov
+    # Fotocasa: 1/2 with pet_policy, 1/2 with furnished
+    assert cov["fotocasa"]["pet_policy"]["non_null_rate"] == 0.5
+    # The (0, 0) row is detected as invalid
+    assert cov["fotocasa"]["invalid_coordinates"]["count"] == 1
+    # Idealista row has everything NULL
+    assert cov["idealista"]["description"]["non_null_rate"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_recent_orders_by_scraped_at_desc_and_caps_at_limit():
     pool = _FakePool()
     pool.queued_fetch.append(
@@ -195,6 +301,7 @@ async def test_recent_orders_by_scraped_at_desc_and_caps_at_limit():
                 "furnished": None,
                 "raw_json": {"k": "v"},
                 "scraped_at": datetime(2026, 1, 2, tzinfo=UTC),
+                "dedup_key": None,
             }
         ]
     )
@@ -205,6 +312,61 @@ async def test_recent_orders_by_scraped_at_desc_and_caps_at_limit():
     sql, args = pool.calls[0]
     assert "ORDER BY scraped_at DESC" in sql
     assert args == (3,)
+
+
+@pytest.mark.asyncio
+async def test_list_by_dedup_key_returns_matching_rows():
+    pool = _FakePool()
+    pool.queued_fetch.append(
+        [
+            {
+                "id": 1,
+                "source": "fotocasa",
+                "external_id": "f1",
+                "url": "u",
+                "title": None,
+                "price_eur": None,
+                "rooms": None,
+                "bathrooms": None,
+                "size_m2": None,
+                "address": None,
+                "lat": None,
+                "lng": None,
+                "description": None,
+                "pet_policy": None,
+                "furnished": None,
+                "raw_json": {"dedup_key": "k1"},
+                "scraped_at": datetime(2026, 1, 2, tzinfo=UTC),
+                "dedup_key": "k1",
+            },
+            {
+                "id": 2,
+                "source": "idealista",
+                "external_id": "i1",
+                "url": "u",
+                "title": None,
+                "price_eur": None,
+                "rooms": None,
+                "bathrooms": None,
+                "size_m2": None,
+                "address": None,
+                "lat": None,
+                "lng": None,
+                "description": None,
+                "pet_policy": None,
+                "furnished": None,
+                "raw_json": {"dedup_key": "k1"},
+                "scraped_at": datetime(2026, 1, 2, tzinfo=UTC),
+                "dedup_key": "k1",
+            },
+        ]
+    )
+    repo = PostgresApartmentRepository(pool)
+    rows = await repo.list_by_dedup_key("k1")
+    assert len(rows) == 2
+    sql, args = pool.calls[0]
+    assert "WHERE dedup_key" in sql
+    assert args == ("k1",)
 
 
 @pytest.mark.asyncio
@@ -234,6 +396,7 @@ def test_row_to_apartment_decodes_raw_jsonb():
         "furnished": None,
         "raw_json": {"nested": 1},
         "scraped_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "dedup_key": None,
     }
     apt = _row_to_apartment(row)
     assert apt.raw == {"nested": 1}

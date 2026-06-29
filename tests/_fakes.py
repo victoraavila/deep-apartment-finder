@@ -15,6 +15,7 @@ from deep_apartment_finder.ports.apartment_repository import (
     ApartmentRepository,
     Duplicate,
     Inserted,
+    Updated,
 )
 from deep_apartment_finder.ports.dangerous_neighborhood_repository import (
     DangerousNeighborhoodRepository,
@@ -26,31 +27,145 @@ from deep_apartment_finder.ports.ranking_repository import (
 )
 from deep_apartment_finder.ports.scraper import ListingCard, ScraperPort
 
+# Sprint 3: fields whose update should trigger an `Updated` result
+# (mirrors the COALESCE list in `003_sprint3.sql`).
+_BACKFILL_FIELDS: tuple[str, ...] = (
+    "pet_policy",
+    "furnished",
+    "lat",
+    "lng",
+    "description",
+)
+
+
+def _diff_backfill_fields(existing: Apartment, new: Apartment) -> tuple[str, ...]:
+    """Return the list of backfillable fields that differ between two apartments.
+
+    `None` is treated as "older" — a real value supersedes a missing
+    one (the COALESCE semantics in `003_sprint3.sql`).
+    """
+    changed: list[str] = []
+    for field_name in _BACKFILL_FIELDS:
+        old = getattr(existing, field_name)
+        new_v = getattr(new, field_name)
+        if new_v is None:
+            continue
+        if old != new_v:
+            changed.append(field_name)
+    return tuple(changed)
+
 
 class InMemoryApartmentRepository(ApartmentRepository):
     """ApartmentRepository that lives in a dict, with the same dedup contract
-    as the Postgres adapter (Inserted vs Duplicate, never raises on dup)."""
+    as the Postgres adapter (Inserted vs Duplicate, never raises on dup).
+
+    Sprint 3: also returns `Updated` when an existing row is rewritten
+    with new backfillable soft fields (`pet_policy`, `furnished`,
+    `lat`, `lng`, `description`). The fake implements the same
+    COALESCE semantics as the migration: a non-None new value
+    supersedes an existing None, and a different non-None value
+    supersedes the old one.
+    """
 
     def __init__(self) -> None:
         self._by_id: dict[int, Apartment] = {}
         self._by_source_ext: dict[tuple[str, str], int] = {}
         self._next_id = 1
 
-    async def upsert(self, apartment: Apartment) -> Inserted | Duplicate:
+    async def upsert(
+        self, apartment: Apartment
+    ) -> Inserted | Updated | Duplicate:
         key = (apartment.source.value, apartment.external_id)
-        if key in self._by_source_ext:
+        existing_id = self._by_source_ext.get(key)
+        if existing_id is None:
+            new_id = self._next_id
+            self._next_id += 1
+            self._by_id[new_id] = apartment
+            self._by_source_ext[key] = new_id
+            return Inserted(apartment_id=new_id)
+
+        existing = self._by_id[existing_id]
+        changed = _diff_backfill_fields(existing, apartment)
+        if not changed:
             return Duplicate(external_id=apartment.external_id)
-        new_id = self._next_id
-        self._next_id += 1
-        self._by_id[new_id] = apartment
-        self._by_source_ext[key] = new_id
-        return Inserted(apartment_id=new_id)
+        # COALESCE semantics: a non-None new value supersedes the old.
+        merged: dict[str, Any] = {}
+        for f in _BACKFILL_FIELDS:
+            new_v = getattr(apartment, f)
+            old_v = getattr(existing, f)
+            merged[f] = new_v if new_v is not None else old_v
+        # `raw_json` is always replaced (Sprint 3 spec).
+        merged_raw = apartment.raw
+        # Replace the stored apartment in-place with the merged one.
+        merged_apartment = Apartment(
+            source=apartment.source,
+            external_id=apartment.external_id,
+            url=apartment.url,
+            title=apartment.title,
+            price_eur=apartment.price_eur,
+            rooms=apartment.rooms,
+            bathrooms=apartment.bathrooms,
+            size_m2=apartment.size_m2,
+            address=apartment.address,
+            lat=merged["lat"],
+            lng=merged["lng"],
+            description=merged["description"],
+            pet_policy=merged["pet_policy"],
+            furnished=merged["furnished"],
+            raw=merged_raw,
+            scraped_at=apartment.scraped_at,
+        )
+        self._by_id[existing_id] = merged_apartment
+        return Updated(apartment_id=existing_id, changed_fields=changed)
 
     async def count(self) -> int:
         return len(self._by_id)
 
     async def duplicate_key_count(self) -> int:
         return 0
+
+    async def cross_portal_dup_count(self) -> int:
+        """Count distinct dedup_keys that map to 2+ rows."""
+        groups: dict[str, int] = {}
+        for apt in self._by_id.values():
+            key = apt.raw.get("dedup_key") if isinstance(apt.raw, dict) else None
+            if not key:
+                continue
+            groups[key] = groups.get(key, 0) + 1
+        return sum(1 for n in groups.values() if n > 1)
+
+    async def field_coverage(self) -> dict[str, dict[str, dict[str, float]]]:
+        """Per-source, per-field null rate + invalid-coordinate count.
+
+        The fake reads `dedup_key` from the raw blob and treats
+        `lat`/`lng` as the apartment's typed fields.
+        """
+        coverage: dict[str, dict[str, dict[str, float]]] = {}
+        # Group apartments by source
+        per_source: dict[str, list[Apartment]] = {}
+        for apt in self._by_id.values():
+            per_source.setdefault(apt.source.value, []).append(apt)
+        for source, apts in per_source.items():
+            n = len(apts)
+            if n == 0:
+                continue
+            per_field: dict[str, dict[str, float]] = {}
+            for f in ("lat", "lng", "pet_policy", "furnished", "description"):
+                non_null = sum(1 for a in apts if getattr(a, f) is not None)
+                per_field[f] = {"non_null_rate": non_null / n, "n": float(n)}
+            # Invalid-coordinate count
+            invalid = 0
+            for a in apts:
+                if a.lat is None or a.lng is None:
+                    continue
+                try:
+                    if float(a.lat) == 0.0 and float(a.lng) == 0.0:
+                        invalid += 1
+                except (TypeError, ValueError):
+                    invalid += 1
+            per_field["invalid_coordinates"] = {"count": float(invalid), "n": float(n)}
+            coverage[source] = per_field
+        return coverage
 
     async def recent(self, limit: int = 10) -> list[Apartment]:
         items = list(self._by_id.values())
@@ -62,6 +177,16 @@ class InMemoryApartmentRepository(ApartmentRepository):
             self._by_id.items(), key=lambda kv: kv[1].scraped_at, reverse=True
         )
         return [(db_id, apt) for db_id, apt in items[:limit]]
+
+    async def list_by_dedup_key(
+        self, dedup_key: str
+    ) -> list[tuple[int, Apartment]]:
+        out: list[tuple[int, Apartment]] = []
+        for db_id, apt in self._by_id.items():
+            raw = apt.raw if isinstance(apt.raw, dict) else {}
+            if raw.get("dedup_key") == dedup_key:
+                out.append((db_id, apt))
+        return out
 
     async def close(self) -> None:
         return None

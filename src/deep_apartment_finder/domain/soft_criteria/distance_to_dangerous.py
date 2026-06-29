@@ -10,6 +10,13 @@ The maximum distance is configurable per-criterion; the ranker passes
 it when constructing the criterion. If the dangerous-neighborhoods
 table is empty, the criterion returns a neutral 0.5 (and the ranker
 logs a warning).
+
+Sprint 3 hardening: a listing whose coordinates are `None`, `(0, 0)`,
+or otherwise outside the Zaragoza bounding box (`is_valid_coordinate`
+returns `False`) is treated the same as a listing with no
+coordinates. The criterion never rewards an apartment for a missing
+or bogus coordinate; it returns a neutral 0.5 with
+`details={"reason": "invalid coordinates"}`.
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ from collections.abc import Iterable
 from deep_apartment_finder.domain.apartment import Apartment
 from deep_apartment_finder.domain.geo import (
     DangerousNeighborhood,
+    is_valid_coordinate,
     nearest_dangerous_boundary_distance_m,
 )
 from deep_apartment_finder.domain.soft_criteria import Score
@@ -63,6 +71,18 @@ class DistanceToDangerousCriterion:
                 score=0.5,
                 weight=self._weight,
                 details={"reason": "missing lat/lng"},
+            )
+        if not is_valid_coordinate(apartment.lat, apartment.lng):
+            # Sprint 3: a listing whose coordinates are (0, 0) or
+            # otherwise outside the Zaragoza bounding box must never
+            # be rewarded as "far from danger" — that would let a
+            # scraper placeholder out-score a real listing. Neutral
+            # 0.5 with an explicit reason so the operator can see it
+            # in the run report.
+            return Score(
+                score=0.5,
+                weight=self._weight,
+                details={"reason": "invalid coordinates"},
             )
         if not self._neighborhoods:
             return Score(

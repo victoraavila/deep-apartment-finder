@@ -93,6 +93,35 @@ def test_distance_criterion_returns_neutral_when_no_lat_lng():
     assert "missing" in score.details["reason"]
 
 
+# --- Sprint 3: invalid coordinates (Pillar D) ------------------------------
+
+
+def test_distance_criterion_returns_neutral_when_coordinates_are_zero_zero() -> None:
+    """`(0, 0)` is the classic scraper placeholder; it must NOT be
+    treated as "very far from any danger" and rewarded."""
+    n = DangerousNeighborhood(
+        name="X", center_lat=41.6517, center_lng=-0.9088, radius_m=600
+    )
+    crit = DistanceToDangerousCriterion(neighborhoods=[n])
+    apt = _apt(lat=0.0, lng=0.0)
+    score = crit.score(apt)
+    assert score.score == 0.5
+    assert score.details["reason"] == "invalid coordinates"
+
+
+def test_distance_criterion_returns_neutral_when_coordinates_are_outside_bbox() -> None:
+    """A point far outside the Zaragoza bounding box (the Atlantic
+    Ocean, the South Pole, ...) is treated as bogus."""
+    n = DangerousNeighborhood(
+        name="X", center_lat=41.6517, center_lng=-0.9088, radius_m=600
+    )
+    crit = DistanceToDangerousCriterion(neighborhoods=[n])
+    apt = _apt(lat=40.4168, lng=-3.7038)  # Madrid
+    score = crit.score(apt)
+    assert score.score == 0.5
+    assert score.details["reason"] == "invalid coordinates"
+
+
 # --- PetPolicyCriterion ---------------------------------------------------
 
 

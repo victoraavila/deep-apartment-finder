@@ -79,6 +79,113 @@ async def test_ingest_apartment_returns_error_on_missing_field():
     assert data["status"] == "error"
 
 
+# --- Sprint 3: backfill (`updated`) + dedup_key + coord normalization -----
+
+
+@pytest.mark.asyncio
+async def test_ingest_apartment_returns_updated_on_backfill():
+    """Sprint 1 row with `pet_policy=None`; the second ingest backfills
+    the field and the tool returns `updated`."""
+    repo = InMemoryApartmentRepository()
+    tool = make_ingest_apartment_tool(repo)
+    apt = make_apartment(external_id="x1", pet_policy=None)
+    payload = json.dumps(apt.to_ingest_dict())
+    await tool.arun(payload)
+
+    apt2 = make_apartment(external_id="x1", pet_policy="allowed")
+    payload2 = json.dumps(apt2.to_ingest_dict())
+    out = await tool.arun(payload2)
+    data = json.loads(out)
+    assert data["status"] == "updated"
+    assert data["id"] == 1
+    assert "pet_policy" in data["changed_fields"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_apartment_drops_invalid_zero_zero_coordinates():
+    """A listing with `lat=0, lng=0` must be stored with `None`."""
+
+    repo = InMemoryApartmentRepository()
+    tool = make_ingest_apartment_tool(repo)
+    apt = make_apartment(external_id="x1", lat=0.0, lng=0.0)
+    payload = json.dumps(apt.to_ingest_dict())
+    await tool.arun(payload)
+    rows = await repo.list_all()
+    assert rows[0][1].lat is None
+    assert rows[0][1].lng is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_apartment_drops_out_of_bbox_coordinates():
+    repo = InMemoryApartmentRepository()
+    tool = make_ingest_apartment_tool(repo)
+    apt = make_apartment(external_id="x1", lat=40.4168, lng=-3.7038)  # Madrid
+    payload = json.dumps(apt.to_ingest_dict())
+    await tool.arun(payload)
+    rows = await repo.list_all()
+    assert rows[0][1].lat is None
+    assert rows[0][1].lng is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_apartment_stamps_dedup_key_on_raw():
+    """The tool computes the dedup_key and stores it in `raw`. Two
+    different sources with the same physical apartment must end up
+    with the same key (read via list_by_dedup_key)."""
+    from deep_apartment_finder.domain.source import Source
+
+    repo = InMemoryApartmentRepository()
+    tool = make_ingest_apartment_tool(repo)
+    apt_f = make_apartment(
+        source=Source.FOTOCASA,
+        external_id="f1",
+        address="Calle X, Zaragoza",
+        price_eur=950.0,
+        rooms=2,
+        size_m2=60.0,
+    )
+    apt_i = make_apartment(
+        source=Source.IDEALISTA,
+        external_id="i1",
+        address="Calle X, Zaragoza",
+        price_eur=950.0,
+        rooms=2,
+        size_m2=60.0,
+    )
+    await tool.arun(json.dumps(apt_f.to_ingest_dict()))
+    await tool.arun(json.dumps(apt_i.to_ingest_dict()))
+
+    rows = await repo.list_all()
+    keys = {a.raw.get("dedup_key") for _, a in rows}
+    assert None not in keys
+    assert len(keys) == 1  # both rows share the same key
+
+
+@pytest.mark.asyncio
+async def test_ingest_apartment_dedup_key_is_stable_across_minor_drift():
+    repo = InMemoryApartmentRepository()
+    tool = make_ingest_apartment_tool(repo)
+    apt1 = make_apartment(
+        external_id="f1",
+        address="Calle X, 50001 Zaragoza",
+        price_eur=950.0,
+        rooms=2,
+        size_m2=65.0,
+    )
+    apt2 = make_apartment(
+        external_id="f2",  # different external_id
+        address="calle x, zaragoza",
+        price_eur=962.0,  # same bucket
+        rooms=2,
+        size_m2=67.0,  # same bucket
+    )
+    await tool.arun(json.dumps(apt1.to_ingest_dict()))
+    await tool.arun(json.dumps(apt2.to_ingest_dict()))
+    rows = await repo.list_all()
+    keys = {a.raw.get("dedup_key") for _, a in rows}
+    assert len(keys) == 1
+
+
 # --- search_listings ------------------------------------------------------
 
 
