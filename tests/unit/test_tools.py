@@ -14,6 +14,10 @@ import pytest
 from deep_apartment_finder.tools.fotocasa.fetch_listing import make_fetch_listing_tool
 from deep_apartment_finder.tools.fotocasa.search_listings import make_search_listings_tool
 from deep_apartment_finder.tools.ingest import make_ingest_apartment_tool
+from deep_apartment_finder.tools.listing_payload import (
+    AGENT_LISTING_FIELDS,
+    apartment_to_agent_payload,
+)
 from tests._fakes import FakeScraper, InMemoryApartmentRepository, make_apartment
 
 # --- ingest_apartment -----------------------------------------------------
@@ -220,6 +224,37 @@ async def test_search_listings_passes_filters_to_scraper():
 # --- fetch_listing --------------------------------------------------------
 
 
+def test_apartment_to_agent_payload_includes_only_normalized_fields():
+    apt = make_apartment(
+        external_id="42",
+        url="https://x/42",
+        price_eur=950.0,
+        rooms=3,
+        bathrooms=2,
+        size_m2=70.0,
+        lat=41.65,
+        lng=-0.88,
+        description="Full description for soft-field extraction.",
+        pet_policy="allowed",
+        furnished="true",
+        raw={"huge_raw_marker": "x" * 10_000},
+    )
+
+    data = apartment_to_agent_payload(apt)
+
+    assert tuple(data) == AGENT_LISTING_FIELDS
+    assert data["source"] == "fotocasa"
+    assert data["external_id"] == "42"
+    assert data["price_eur"] == 950.0
+    assert data["size_m2"] == 70.0
+    assert data["lat"] == 41.65
+    assert data["lng"] == -0.88
+    assert data["description"] == "Full description for soft-field extraction."
+    assert "raw_json" not in data
+    assert "raw" not in data
+    assert "scraped_at" not in data
+
+
 @pytest.mark.asyncio
 async def test_fetch_listing_returns_normalized_apartment_json():
     apt = make_apartment(
@@ -238,8 +273,34 @@ async def test_fetch_listing_returns_normalized_apartment_json():
     assert data["title"] is not None
     assert data["price_eur"] == 950.0
     assert data["rooms"] == 3
-    # scraped_at is not part of the output.
+    # Persistence/debug fields are not part of the model-visible output.
+    assert "raw_json" not in data
+    assert "raw" not in data
     assert "scraped_at" not in data
+
+
+@pytest.mark.asyncio
+async def test_fetch_listing_does_not_expose_huge_raw_payload_to_model():
+    apt = make_apartment(
+        external_id="huge",
+        url="https://x/huge",
+        description="Keep the full description visible to the LLM.",
+        raw={
+            "huge_raw_marker": "this must never be model-visible",
+            "blob": "x" * 100_000,
+        },
+    )
+    scraper = FakeScraper(details={"https://x/huge": apt})
+    tool = make_fetch_listing_tool(scraper)
+
+    out = await tool.arun({"url": "https://x/huge"})
+    data = json.loads(out)
+
+    assert len(out) < 2_000
+    assert "huge_raw_marker" not in out
+    assert "raw_json" not in data
+    assert "raw" not in data
+    assert data["description"] == "Keep the full description visible to the LLM."
 
 
 @pytest.mark.asyncio
