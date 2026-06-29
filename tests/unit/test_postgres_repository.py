@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import asyncpg
 import pytest
 
 from deep_apartment_finder.adapters.postgres.repository import (
@@ -50,7 +51,10 @@ class _FakeConn:
         self._pool.calls.append((sql, args))
         # Return whatever the test queued for the next fetchrow call.
         if self._pool.queued_fetchrow:
-            return self._pool.queued_fetchrow.pop(0)
+            queued = self._pool.queued_fetchrow.pop(0)
+            if isinstance(queued, BaseException):
+                raise queued
+            return queued
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
@@ -67,7 +71,7 @@ class _FakeConn:
 class _FakePool:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
-        self.queued_fetchrow: list[dict[str, Any] | None] = []
+        self.queued_fetchrow: list[dict[str, Any] | BaseException | None] = []
         self.queued_fetch: list[list[dict[str, Any]]] = []
 
     def acquire(self):
@@ -200,6 +204,41 @@ async def test_upsert_reads_dedup_key_from_raw():
     await repo.upsert(apt)
     sql, args = pool.calls[0]
     assert args[16] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_upsert_returns_duplicate_on_dedup_key_unique_collision():
+    """The partial unique dedup_key index means the second portal can
+    hit the same physical apartment. That is a duplicate, not a CLI
+    crash."""
+    pool = _FakePool()
+    exc = asyncpg.UniqueViolationError("duplicate key")
+    exc.constraint_name = "apartments_dedup_key_idx"
+    pool.queued_fetchrow.append(exc)
+    repo = PostgresApartmentRepository(pool)
+
+    result = await repo.upsert(
+        _make_apartment(
+            source=Source.IDEALISTA,
+            external_id="idealista-1",
+            raw={"dedup_key": "abc123"},
+        )
+    )
+
+    assert isinstance(result, Duplicate)
+    assert result.external_id == "idealista-1"
+
+
+@pytest.mark.asyncio
+async def test_upsert_reraises_unexpected_unique_violation():
+    pool = _FakePool()
+    exc = asyncpg.UniqueViolationError("duplicate source external id")
+    exc.constraint_name = "some_other_constraint"
+    pool.queued_fetchrow.append(exc)
+    repo = PostgresApartmentRepository(pool)
+
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await repo.upsert(_make_apartment(raw={"dedup_key": "abc123"}))
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,8 @@ WHERE dedup_key = $1
 ORDER BY id ASC
 """
 
+_DEDUP_KEY_CONSTRAINT = "apartments_dedup_key_idx"
+
 
 def _row_to_apartment(row: asyncpg.Record) -> Apartment:
     raw_json = row["raw_json"]
@@ -199,27 +201,32 @@ class PostgresApartmentRepository(ApartmentRepository):
         if isinstance(scraped_at, str) and scraped_at:
             scraped_at = datetime.fromisoformat(scraped_at)
         dedup_key = (apartment.raw or {}).get("dedup_key")
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                _UPSERT_SQL,
-                d["source"],
-                d["external_id"],
-                d["url"],
-                d["title"],
-                d["price_eur"],
-                d["rooms"],
-                d["bathrooms"],
-                d["size_m2"],
-                d["address"],
-                d["lat"],
-                d["lng"],
-                d["description"],
-                d["pet_policy"],
-                d["furnished"],
-                json.dumps(d["raw_json"], default=_json_default),
-                scraped_at,
-                dedup_key,
-            )
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    _UPSERT_SQL,
+                    d["source"],
+                    d["external_id"],
+                    d["url"],
+                    d["title"],
+                    d["price_eur"],
+                    d["rooms"],
+                    d["bathrooms"],
+                    d["size_m2"],
+                    d["address"],
+                    d["lat"],
+                    d["lng"],
+                    d["description"],
+                    d["pet_policy"],
+                    d["furnished"],
+                    json.dumps(d["raw_json"], default=_json_default),
+                    scraped_at,
+                    dedup_key,
+                )
+        except asyncpg.UniqueViolationError as exc:
+            if getattr(exc, "constraint_name", None) == _DEDUP_KEY_CONSTRAINT:
+                return Duplicate(external_id=apartment.external_id)
+            raise
         if row is None:
             return Duplicate(external_id=apartment.external_id)
         if row["inserted"]:
