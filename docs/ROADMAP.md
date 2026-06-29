@@ -24,6 +24,10 @@ Avoid duplicating content between this file and the sprint files.
 - **Scraping is DIY and free** until proven insufficient. We try the easy
   portals first and only escalate to stealth/CSR strategies or paid services
   if quality demands it.
+- **Runs must be operator-observable.** A CLI run should not look like an
+  opaque stream of provider POST requests. The operator needs clear phase
+  transitions, progress counters, current subagent/tool state, warnings,
+  decisions, and links to persisted reports while the run is happening.
 - **Decisions are recorded as ADRs** under `docs/adr/NNN-*.md`.
 
 ## Stack
@@ -78,6 +82,19 @@ These are intentionally left open and revisited at the indicated sprint:
 The database schema is prepared for embeddings from Sprint 1 (a nullable
 `embedding vector(1536)` column), so activating them in Sprint 4 is a
 non-breaking change.
+
+## Near-term product debt
+
+- **End-to-end run UX / observability:** add an operator-facing execution
+  view for the whole pipeline, not just the first-run researcher. The CLI
+  should print structured phases such as `researcher`, `scraper`, `ranker`,
+  and `notifier`; show current action, counts, and elapsed time; summarize
+  each LLM/tool call in domain terms; clearly distinguish waiting on LLM,
+  web search, scraper HTTP, database writes, ranking, and SMTP; and write a
+  persistent run report that can be inspected after cron/manual runs. This
+  should make it obvious whether the system is researching, ingesting,
+  blocked, retrying, ranking, or notifying instead of showing only low-level
+  HTTP POST logs.
 
 ## Sprints — abstract view
 
