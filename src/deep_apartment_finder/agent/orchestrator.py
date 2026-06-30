@@ -41,7 +41,9 @@ from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
+from deepagents.middleware.subagents import create_sub_agent
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 
 from deep_apartment_finder.adapters.observability.tracing import trace
 from deep_apartment_finder.domain.filters.hard import HardFilters
@@ -59,6 +61,7 @@ from deep_apartment_finder.ports.scraper import ScraperPort
 from deep_apartment_finder.subagents.fotocasa_scraper import build_fotocasa_scraper_subagent
 from deep_apartment_finder.subagents.idealista_scraper import build_idealista_scraper_subagent
 from deep_apartment_finder.subagents.researcher import build_researcher_subagent
+from deep_apartment_finder.tools.orchestrator.run_scrapers import make_run_scrapers_tool
 from deep_apartment_finder.tools.researcher.count_neighborhoods import (
     make_count_dangerous_neighborhoods_tool,
 )
@@ -136,6 +139,34 @@ def build_orchestrator(
     orchestrator_tools = [
         make_count_dangerous_neighborhoods_tool(dangerous_repo),
     ]
+
+    # Sprint 4 (Pillar B.1): compile the scraper subagent graphs in
+    # parallel via the `run_scrapers` tool. We build the compiled
+    # `Runnable` for each spec via `create_sub_agent` (the same
+    # factory the deepagents `task` tool uses internally) and hand
+    # them to the tool. The deepagents `subagents=[...]` argument
+    # ALSO compiles them (so the `task` tool still works for
+    # single-portal debugging), but we don't go through it; we
+    # build them ourselves so the parallel path is independent of
+    # the deepagents middlewares.
+    scraper_runnables: list[tuple[str, Runnable]] = []
+    for spec in subagents:
+        if spec["name"] not in {"fotocasa_scraper", "idealista_scraper"}:
+            continue
+        # Stamp the spec's model with the orchestrator's LLM so the
+        # subagent's session uses the same provider / fallback. The
+        # factory only needs `model` + `tools`; system_prompt is
+        # already in the spec.
+        compiled = create_sub_agent(
+            {
+                **spec,
+                "model": llm,
+            }
+        )
+        scraper_runnables.append((spec["name"], compiled))
+    if scraper_runnables:
+        orchestrator_tools.append(make_run_scrapers_tool(scraper_runnables))
+
     graph = create_deep_agent(
         model=llm,
         tools=orchestrator_tools,

@@ -34,14 +34,18 @@ listing-related action to the `fotocasa_scraper` and
 2. If the dangerous-neighborhoods table is non-empty (or after
    a successful first-run bootstrap + a second invocation), call
    `write_todos` and proceed.
-3. **Delegate to BOTH scrapers in a single run.** Issue two
-   `task` calls — one to `fotocasa_scraper`, one to
-   `idealista_scraper` — with the same hard-filter brief (city,
-   rooms, bathrooms, size, price) and the same maximum number of
-   listings to ingest this run. You may run them sequentially
-   (Fotocasa first, then Idealista) or in a single round if the
-   subagents are independent; either is fine. The point is: **never
-   pick one portal — always call both.**
+3. **Delegate to BOTH scrapers in a single run via `run_scrapers`.**
+   Call the `run_scrapers` tool **exactly once** per run with the
+   shared hard-filter brief (city, rooms, bathrooms, size, price,
+   and the per-portal ingest cap). The tool fires the
+   `fotocasa_scraper` and `idealista_scraper` subagents
+   concurrently via `asyncio.gather` and returns a single combined
+   handoff. The point is: **never pick one portal — always call
+   both, in parallel.** Do not call `task` for the two scrapers
+   in this run; the LLM-side fan-out of two `task` calls would
+   re-serialise the work and undo the wall-time saving. (The
+   `task` tool stays registered for debugging a single portal in
+   isolation.)
 4. Inspect each subagent's handoff summary. Each should report:
    - how many cards it saw,
    - how many detail pages it fetched,
@@ -65,8 +69,13 @@ yours; you do not need to call any dedup tool.
 ## Tools you have
 
 - `write_todos` — plan the run.
-- `task` — invoke the `fotocasa_scraper`, `idealista_scraper`, or
-  `researcher` subagent.
+- `run_scrapers` — Sprint 4: invoke BOTH `fotocasa_scraper` and
+  `idealista_scraper` in parallel, with the same brief. Call this
+  exactly once for the scraper phase.
+- `task` — invoke the `researcher` subagent (only on the first
+  run). You may also use `task` to debug a single scraper in
+  isolation, but for the normal daily run the scraper phase goes
+  through `run_scrapers`.
 - `count_dangerous_neighborhoods` — a read-only tool that returns
   the number of rows in `dangerous_neighborhoods`. Use it to decide
   whether to invoke `researcher` (and only `researcher`).

@@ -54,8 +54,8 @@ from deep_apartment_finder.ports.run_observer import RunObserver
 app = typer.Typer(
     name="deep-apartment-finder",
     help=(
-        "Agent-driven Zaragoza apartment finder (Sprint 3: "
-        "observability + second scraping source + cross-portal dedup prep)."
+        "Agent-driven Zaragoza apartment finder (Sprint 4: "
+        "Idealista detail-page upgrade + parallel scraper execution)."
     ),
     no_args_is_help=True,
 )
@@ -117,6 +117,16 @@ def run(
             "scraper has already run today."
         ),
     ),
+    no_detail_fetch: bool = typer.Option(
+        False,
+        "--no-detail-fetch",
+        help=(
+            "Sprint 4: disable the playwright-based Idealista detail "
+            "page fetch for this run. The scraper falls back to the "
+            "search-card path; `bathrooms` stays `None` on every "
+            "Idealista row. Equivalent to `IDEALISTA_DETAIL_FETCH=disabled`."
+        ),
+    ),
     trace: bool = typer.Option(
         False,
         "--trace",
@@ -130,12 +140,12 @@ def run(
 ) -> None:
     """Run the orchestrator end-to-end. Prints a summary when done.
 
-    The Sprint 3 flow is: researcher (only if
+    The Sprint 4 flow is: researcher (only if
     `dangerous_neighborhoods` is empty) -> fotocasa_scraper +
-    idealista_scraper (LLM) -> ranker (Python) -> notifier (Python).
-    On the first run the orchestrator stops after the researcher
-    has bootstrapped the constants table; the operator is asked
-    to re-run.
+    idealista_scraper (LLM, run concurrently via `run_scrapers`) ->
+    ranker (Python) -> notifier (Python). On the first run the
+    orchestrator stops after the researcher has bootstrapped the
+    constants table; the operator is asked to re-run.
 
     Observability (Sprint 3 Pillar A + B): phase headers and
     counters are written to **stderr** in real time by the
@@ -147,6 +157,10 @@ def run(
     """
     _configure_logging(verbose)
     settings = get_settings()
+    if no_detail_fetch:
+        settings = settings.model_copy(
+            update={"idealista_detail_fetch": False}
+        )
     configure_langsmith_from_settings(settings, force=trace)
 
     async def _run() -> dict[str, Any]:

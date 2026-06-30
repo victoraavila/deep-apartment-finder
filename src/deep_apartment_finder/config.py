@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     # Set to `false` to skip Idealista entirely (e.g. if DataDome starts
     # blocking the working profile, or for tests).
     idealista_enabled: bool = True
+    # Sprint 4: toggle for the playwright-based detail-page enrichment
+    # (`adapters/scrapers/idealista/detail_client.py`). When `true`
+    # (the default), `IdealistaScraper.fetch_listing` opens a single
+    # `BrowserContext` and hits `/inmueble/<id>/` to populate
+    # `bathrooms`, `rooms`, `size_m2`, and the long-form `description`.
+    # Set to `false` to disable the detail fetch entirely (CI runners
+    # without Chromium, operators testing the search-card path only).
+    idealista_detail_fetch: bool = True
 
     # --- Researcher web search ------------------------------------------
     exa_api_key: str | None = None
