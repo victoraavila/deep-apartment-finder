@@ -263,13 +263,23 @@ playwright timeouts from Sprint 4.
         "details_enriched": 25, "details_failed": 0
       }
     },
+    "verification": {
+      "rows_checked": 10,
+      "rows_live": 8,
+      "rows_changed": 1,
+      "rows_dead": 1,
+      "rows_unknown": 0,
+      "truncated_by_time_budget": false,
+      "promotions_from_top_nx2": 1
+    },
     "dedup_siblings_collapsed": 11
   }
   ```
 
   The keys are present even when the per-portal scraper is
   disabled (zeroed), so downstream consumers do not have to
-  branch.
+  branch. The `verification` block is the home of Pillar G's
+  output; see below.
 
 - The `validate-quality` script (`scripts/validate_quality.py`
   or equivalent) grows a "cheap-only row coverage" check: for
@@ -279,6 +289,190 @@ playwright timeouts from Sprint 4.
   fetch; re-run with `--max-detail-fetches 50` to upgrade them."
 - The `show-run` CLI subcommand (Sprint 3 Pillar A) shows the
   new counters in its terminal summary.
+
+### Pillar F — Top-N: 5 → 10
+
+The ranker already takes `top_n` as a config knob
+(`Settings.rank_top_n`, default 5 — see `config.py:102` and
+`main.py:152`). Bumping the default to `10` is a one-line change
+in `config.py`; the notifier, the email template, and the
+run-report `_enrich_top_n` consumer all read whatever the ranker
+returns, so no caller changes. The handoff's `top_n_returned`
+field (already emitted by `_DeterministicSteps`) reports the
+actual count, which the email body uses verbatim.
+
+The 5 → 10 bump is the smallest possible change, but it is
+paired with Pillar G because a larger top-N makes the
+existence check proportionally more valuable: more rows
+means more chances for a stale URL to slip through to the
+email. The two are wired together so the operator never sees
+a regression in either direction — the ranker emits 10 rows
+and the verifier ensures all 10 are still live.
+
+The email body (rendered in
+`adapters/notifiers/gmail_smtp.py` and the `notifier` subagent's
+prompt) is templated: it already iterates the full top-N list
+with a per-row block, so the bump is invisible to the
+template's logic. A run that returns fewer than 10 live rows
+sends a shorter email; the template's footer ("showing N of
+M ranked apartments") handles the partial-list case
+transparently. No new template variable is needed.
+
+### Pillar G — Verifier step: every ranked URL must still exist
+
+A new deterministic phase `verifier` runs **after** the ranker
+and **before** the notifier. For each of the top-N rows, the
+verifier confirms the URL still resolves to a live listing,
+and surfaces a `verification_status` field per row in the
+run report. The phase has three outcomes per row:
+
+1. **`live`** — the detail page returns 200 (or the portal's
+   equivalent) and the apartment's `external_id` is still
+   present in the HTML / JSON. The row is unchanged; the
+   `verification_status` in the run report is `"live"`.
+2. **`changed`** — the page is live but the listing was
+   materially edited (price, size, rooms, bathrooms, or
+   `lat`/`lng` differ from the DB row by more than a
+   threshold). The verifier updates the DB row with the
+   fresh fields, re-scores the apartment using the existing
+   `RankableApartment` pipeline, and emits a
+   `verification_changes` diff in the run report. The
+   updated score replaces the old score in the email
+   body, with a one-line "price dropped from X to Y" or
+   "size grew from A to B" annotation. The
+   `verification_status` is `"changed"`.
+3. **`dead`** — the page returns 404, the listing was
+   delisted, or the URL is redirected to a search page
+   with no match. The row is dropped from the top-N
+   entirely; the next-best row from the ranker's
+   pre-dedup top-N×2 list is promoted into the email
+   so the operator still gets 10. The dropped row's
+   `verification_status` is `"dead"`; the
+   promoted-from-reserve row's is `"promoted"`. A
+   `promotions_from_top_nx2` counter on the run
+   report shows how many reserves were used.
+
+Implementation strategy:
+
+- **Port expansion.** One new method on `ScraperPort`:
+  `verify_listing(url: str) -> VerificationResult`. The
+  return type is a small dataclass
+  (`VerificationResult` in `ports/scraper.py`) carrying
+  `status: Literal["live", "changed", "dead", "unknown"]`,
+  `fresh_fields: dict[str, Any] | None`, and
+  `details: dict[str, Any]`. The existing `search_listings`
+  / `fetch_listing` / `close` methods are unchanged. This
+  is the only port expansion in Sprint 5; it is
+  additive, not breaking, and any future `ScraperPort`
+  implementation is free to throw `NotImplementedError`
+  (the verifier treats that as `status="unknown"` and
+  keeps the row).
+- **Fotocasa implementation.** `FotocasaScraper.verify_listing`
+  reuses the existing shared `httpx` async session for a
+  cheap `GET` of the listing URL
+  (`/es/alquiler/vivienda/.../<id>/d`). Fotocasa does
+  not gate the detail endpoint on DataDome-like
+  challenges, so the existing session is enough. The
+  response is parsed for the listing's `external_id` and
+  the live price / size / rooms / bathrooms block; a
+  diff against the DB row determines `live` vs
+  `changed`. A 404 or a redirect to a search page is
+  `dead`.
+- **Idealista implementation.** `IdealistaScraper.verify_listing`
+  reuses the **same** playwright `BrowserContext` from
+  Sprint 4 Pillar A — one shared context, ten page loads
+  against `/inmueble/<id>/`, no new browser launch. The
+  existing `fetch_detail_html` method is **not** reused
+  as-is because it returns HTML the caller parses; the
+  verifier needs a structured `VerificationResult`. A
+  thin wrapper inside the scraper
+  (`_verify_via_detail_html`) calls `fetch_detail_html`,
+  then `parse_detail_page` (Sprint 4 Pillar A's parser),
+  and diffs the result against the DB row. The shared
+  `BrowserContext` accumulates DataDome trust across
+  all 10 page loads — the same trust signal that makes
+  the deep-fetch path work.
+- **Reserve pool.** The ranker already returns the full
+  pre-dedup top-N×2 list to the deterministic steps
+  (`_DeterministicSteps.run` in `agent/orchestrator.py`).
+  The verifier promotes from this reserve when a row
+  dies. If the reserve is exhausted (more dead rows
+  than reserves), the email ships with fewer than
+  `top_n` rows; the `top_n_returned` field is honest
+  about the count. Reserves are re-scored only if
+  their cheap-card or deep-card state changed since
+  the ranker saw them; the cheap-only re-score is a
+  no-op (the ranker already scored them on cheap
+  fields) and the deep-card re-score is a single
+  `RankableApartment` call, which is the existing
+  ranker hot path.
+- **Soft time budget.** The verifier phase has its own
+  soft time budget (`Settings.verifier_time_budget_s`,
+  default 60s). The 10 fetches run in parallel via
+  `asyncio.gather` (Sprint 4 B.2 axis). On
+  time-budget exhaustion, unverifiable rows are kept
+  in the email with `verification_status="unknown"`
+  and a `verification_warning` field ("could not be
+  re-verified in time, click before trusting") — the
+  operator still gets the recommendation, but the
+  email body flags it. The
+  `truncated_by_time_budget` field on the
+  `verification` block is set to `true` in that case.
+- **Failure mode isolation.** A `verify_listing` exception
+  is caught per-row and turned into
+  `status="unknown"`. A portal-wide failure (e.g. the
+  Fotocasa session is broken) sets every row's status
+  to `"unknown"` and emits a structured warning;
+  the email still ships. This is the same "degrade
+  gracefully" pattern as the Sprint 4 detail-fetch
+  fallback.
+- **CLI and run report.** The `_enrich_top_n` helper in
+  `cli.py` grows a `verification_status` field on
+  each enriched top-N row. The `NotifiedApartment`
+  dataclass the email template iterates over
+  already carries per-row fields, so the email
+  template grows a small status badge per row
+  (a green dot for `live`, an amber dot for
+  `changed`, a red strikethrough for `dead` or
+  `unknown`); the badge is a pure-presentation
+  change, no new template variable beyond
+  `verification_status`.
+
+**Why a separate `verifier` phase, not a subagent.** The
+verifier is pure-Python over already-built adapters —
+no LLM, no planning, no tool use. Keeping it as a
+deterministic phase of the orchestrator
+(`_DeterministicSteps`) keeps the phase ordering
+explicit (`scraper → ranker → verifier → notifier`)
+and lets the operator see the verifier's counters
+in the same structured CLI output as the ranker's
+(`=== verifier ===  rows_checked 10  live 8  changed
+1  dead 1  truncated_by_time_budget false`). A
+subagent would add LLM round-trips and obscure the
+phase ordering for no benefit.
+
+## Concurrency model
+
+The Sprint 4 concurrency story (ADR-013) is unchanged and
+composes cleanly:
+
+- **Across portals (B.1).** `run_scrapers` still uses
+  `asyncio.gather` on the two subagent graphs. The new
+  cheap-card pass inside each subagent is one extra tool call
+  per page × N pages; the parallel `fetch_listing` calls on the
+  LLM's shortlist (B.2) still apply.
+- **Across detail fetches in one subagent (B.2).** The
+  `max_detail_fetches` cap is the *only* thing that changed.
+  The LLM still fires N parallel `fetch_listing` calls in a
+  single batch where N ≤ `max_detail_fetches`.
+- **Inside the Idealista `fetch_listing` (B.3).** Unchanged.
+- **Verifier (new in Sprint 5).** The 10 `verify_listing`
+  calls fan out via `asyncio.gather` with a single
+  `asyncio.wait_for(..., timeout=verifier_time_budget_s)`
+  wrapper. The Idealista fetches share the existing
+  `BrowserContext`; the Fotocasa fetches share the existing
+  `httpx` session. Both are concurrent-safe (Sprint 4 B.2
+  established this).
 
 ## Concurrency model
 
@@ -311,34 +505,62 @@ No new migrations. The `apartments` table already has nullable
 non-nullable columns (`external_id`, `url`, `title`, `price_eur`,
 `size_m2`, `rooms`, `address`, `source`, `dedup_key`); the
 nullable ones stay `NULL` until the deep pass upgrades the row.
+The verifier's `changed` path uses the existing
+`ApartmentRepository.upsert` (with the same backfill
+semantics from Sprint 3 Pillar D) to update the row in place,
+so no new column is needed for the verification diff. The
+`ranking` table's per-criterion score rows already track
+`score_value`; a re-scored row simply writes a new score row
+for the same criterion in the same ranking run, and the
+ranker's `set_top_n` re-pack uses the most recent one.
 
 ## Package layout (additions on top of Sprint 4)
 
 ```
 src/deep_apartment_finder/
-  config.py                            # + max_detail_fetches, search_time_budget_s
+  config.py                            # + max_detail_fetches, search_time_budget_s,
+                                      #   verifier_time_budget_s;
+                                      #   rank_top_n default 5 → 10
   ports/
     apartment_repository.py            # + upsert_card(...) abstract method
+    scraper.py                         # + verify_listing(...) abstract method,
+                                      #   + VerificationResult dataclass
   adapters/
     postgres/
       repository.py                    # + upsert_card_only(...) SQL helper
+    scrapers/
+      fotocasa/scraper.py              # + verify_listing via existing httpx session
+      idealista/scraper.py             # + _verify_via_detail_html reusing the
+                                      #   shared BrowserContext from Sprint 4
+  domain/
+    verifier.py                        # new: deterministic verify_and_promote
+                                      #   over the top-N list, with reserve
+                                      #   promotion + soft time budget
   tools/
     ingest/
       ingest_card.py                   # new tool factory
+  agent/
+    orchestrator.py                    # + verifier phase in _DeterministicSteps,
+                                      #   between ranker and notifier
   subagents/
     prompts/
       idealista_scraper.md             # updated: walk every page, two-tier
       fotocasa_scraper.md              # updated: same shape for symmetry
   scripts/
     validate_quality.py                # + cheap-only row coverage check
+  adapters/notifiers/gmail_smtp.py     # + per-row verification_status badge
+                                      #   in the email template
 ```
 
-The `ScraperPort` (`ports/scraper.py`) is unchanged — the
-time-budget signal is a private detail of the concrete scraper.
-`IdealistaScraper` and `FotocasaScraper` are unchanged on the
-outside; their `search_listings` iterator grows a single
-`time.monotonic()` check at the top of the page loop. The
-ingest layer is the only thing that changes shape.
+The `ScraperPort` (`ports/scraper.py`) grows **one** new
+method: `verify_listing(url) -> VerificationResult`. This is
+the only port expansion in Sprint 5; it is additive and
+non-breaking. `IdealistaScraper` and `FotocasaScraper` are
+unchanged on the outside for `search_listings` and
+`fetch_listing`; their `search_listings` iterator grows a
+single `time.monotonic()` check at the top of the page loop
+(Pillar D), and the new `verify_listing` method is added
+alongside.
 
 ## LLM usage in Sprint 5
 
@@ -358,18 +580,23 @@ ingest layer is the only thing that changes shape.
   The selection prompt is template-driven: "pick the top
   `max_detail_fetches` cards on these criteria". The LLM
   returns a JSON list of `external_id`s.
-- **`ranker` + `notifier`:** unchanged (deterministic Python).
+- **`ranker` + `verifier` + `notifier`:** unchanged
+  (deterministic Python). The verifier is pure-Python over the
+  `ScraperPort.verify_listing` hook — no LLM round-trip.
+  LLM cost at rank / verify / notify time remains zero.
 - **Orchestrator:** unchanged (one `run_scrapers` call).
 
 Sprint 5 *reduces* total LLM tokens for the same portal
 coverage, because the cap now bounds the *expensive* path
-(detail) instead of the cheap path (search).
+(detail) instead of the cheap path (search). The verifier
+adds zero LLM cost.
 
 ## Observability — phase contract
 
 The `RunObserver` (Sprint 3 Pillar A) is unchanged. Sprint 5
-emits the same events as Sprint 4, with three new counters per
-portal in the handoff and one new flag in the run report:
+emits the same events as Sprint 4, with three new counters
+per portal in the handoff, a new `verifier` phase, and an
+updated `ranker` line that reports the new top-N count:
 
 ```
 === scraper (fotocasa) ===
@@ -386,14 +613,22 @@ portal in the handoff and one new flag in the run report:
            duplicates 7, filtered 3, soft_extracted 25
            details_enriched=25 details_failed=0
 === ranker ===
-  ranker: scored 84 apartments, wrote 252 score rows, top 5
+  ranker: scored 84 apartments, wrote 252 score rows, top 10
+=== verifier ===
+  verifier: checked 10, live 8, changed 1, dead 1,
+            promotions 1, truncated_by_time_budget false
+=== notifier ===
+  notifier: top 10 emailed to ...
 === orchestrator ===
   dedup_siblings_collapsed: 11
   search_truncated_by_time_budget: false
 ```
 
 The RecordingRunObserver already handles per-portal counters
-from Sprint 4, so no new observer code is needed.
+from Sprint 4 and a new `verifier` phase event with the
+same shape as `ranker` (counts in, counts out, a soft
+time-budget flag) — no observer code change, just a new
+phase registered in `_DeterministicSteps`.
 
 ## Acceptance criteria
 
