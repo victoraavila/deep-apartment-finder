@@ -784,32 +784,71 @@ phase registered in `_DeterministicSteps`.
     cleanly when the budget is exhausted, sets the
     truncation flag).
   - The `validate-quality` cheap-only coverage check.
+  - `ScraperPort.verify_listing` for both `live`,
+    `changed`, `dead`, and `unknown` outcomes
+    (`FotocasaScraper` and `IdealistaScraper` concrete
+    paths).
+  - The verifier's reserve promotion (dead row → next
+    best from the ranker's pre-dedup top-N×2) and
+    reserve-exhaustion path.
+  - The verifier's soft time budget
+    (`verifier_time_budget_s`): parallel `asyncio.gather`
+    of N `verify_listing` calls completes in ≈ time of
+    the slowest, not the sum; budget exhaustion
+    produces `unknown` rows with the warning string.
+  - The Idealista verifier sharing the existing
+    `BrowserContext` from Sprint 4 (no new browser
+    launch, no leak on `close()`).
+  - The email template's per-row `verification_status`
+    badge and the changed-row annotation rendering.
 - One new integration test exercises the full
   orchestrator → `run_scrapers` (with both
-  `fotocasa_scraper` + `idealista_scraper`) → `ranker` →
-  `notifier` flow with fake adapters that return
-  multi-page result sets, asserts the run report carries
-  the per-portal `cards_walked` and `cards_deep_fetched`
-  counters, and asserts cross-portal dedup still works at
-  the cheap stage.
-- New ADR: **ADR-014 — Two-tier ingest: full search walk
-  with bounded deep fetches.** The ADR records the
-  cost-asymmetry rationale, the cap location (per-portal
-  `max_detail_fetches` + per-scraper
-  `search_time_budget_s`), the cheap-card-only row shape,
-  and the relationship to Sprint 3 Pillar D backfill
-  semantics.
+  `fotocasa_scraper` + `idealista_scraper`) →
+  `ranker` → `verifier` → `notifier` flow with fake
+  adapters that return multi-page result sets, asserts
+  the run report carries the per-portal `cards_walked`
+  and `cards_deep_fetched` counters, asserts the
+  `verification` block has the expected
+  `rows_live / rows_changed / rows_dead /
+  rows_unknown / truncated_by_time_budget /
+  promotions_from_top_nx2` shape, asserts cross-portal
+  dedup still works at the cheap stage, and asserts the
+  email body iterates all `live` + `changed` +
+  `promoted` rows in score order.
+- New ADRs:
+  - **ADR-014 — Two-tier ingest: full search walk
+    with bounded deep fetches.** Records the
+    cost-asymmetry rationale, the cap location
+    (per-portal `max_detail_fetches` + per-scraper
+    `search_time_budget_s`), the cheap-card-only row
+    shape, and the relationship to Sprint 3 Pillar D
+    backfill semantics.
+  - **ADR-015 — Ranker top-N expansion (5 → 10) and
+    post-rank verifier.** Records the top-N bump
+    rationale (more chances to surface a fit listing
+    given the cheap-card-only population), the
+    verifier's phase placement (between ranker and
+    notifier), the per-portal `verify_listing` hook
+    on the `ScraperPort`, the reserve-promotion
+    semantics, the soft time budget, and the
+    Idealista reuse of the Sprint 4 `BrowserContext`.
 - `README.md` updated with: the new
-  `MAX_DETAIL_FETCHES` and `SEARCH_TIME_BUDGET_S` env
-  vars, the `INGEST_MAX_LISTINGS` deprecation note, the
-  expected run-report shape change, and a "What's new in
-  Sprint 5" section.
-- `.env.example` documents the two new env vars
-  (default `25` and `120` respectively) and the
+  `MAX_DETAIL_FETCHES`, `SEARCH_TIME_BUDGET_S`, and
+  `VERIFIER_TIME_BUDGET_S` env vars, the
+  `INGEST_MAX_LISTINGS` deprecation note, the
+  `RANK_TOP_N` default bump to 10, the expected
+  run-report shape change (per-portal counters + the
+  new `verification` block), the email-template
+  per-row status badge, and a "What's new in Sprint 5"
+  section.
+- `.env.example` documents the three new env vars
+  (defaults `25`, `120`, `60` respectively) and the
   deprecated alias.
 - The Sprint 4 acceptance criteria that were not changed
   by Sprint 5 still pass: parallel subagent execution,
   parallel detail fetches, `bathrooms` populated on
   Idealista, graceful degradation, idempotency,
   `dedup_key` semantics, the OCP smoke test (no port
-  expansion visible to the orchestrator).
+  expansion visible to the orchestrator — the single
+  new `ScraperPort.verify_listing` method is the
+  only port surface change).
