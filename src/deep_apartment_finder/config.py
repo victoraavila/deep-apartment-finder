@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     rank_weight_pet_policy: float = 0.3
     rank_weight_furnished: float = 0.2
     rank_max_distance_m: float = 2000.0
-    rank_top_n: int = 5
+    rank_top_n: int = 10
 
     @property
     def has_opencode_primary(self) -> bool:
