@@ -10,6 +10,7 @@ listing that would have been perfect for you.
 ## Table of contents
 
 - [Features](#features)
+- [Technology stack](#technology-stack)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
@@ -39,6 +40,27 @@ listing that would have been perfect for you.
 - Structured CLI progress, persisted run reports, and optional
   LangSmith tracing.
 
+## Technology stack
+
+This project is intentionally built as an AI-agent portfolio project,
+with the agent stack kept visible in the codebase:
+
+| Layer | Technology | How it is used |
+| --- | --- | --- |
+| Agent orchestration | **Deep Agents** | The main orchestrator is built with `create_deep_agent`, uses `write_todos`, delegates work to registered subagents, and manages agent filesystem state. |
+| Agent runtime | **LangGraph** | Deep Agents runs on LangGraph; the orchestrator exposes a compiled LangGraph-style graph that the CLI invokes with `.ainvoke(...)`. The filesystem backend also uses `langgraph.store.memory.InMemoryStore`. |
+| Tooling and model abstraction | **LangChain / langchain-core** | Scraper, researcher, ingest, and orchestration actions are implemented as LangChain tools; chat models are wired through LangChain provider adapters. |
+| Observability | **LangSmith** | Optional tracing records the end-to-end run, including LLM calls, deterministic phases, counters, and persisted run-report metadata. |
+| LLM providers | **langchain-openai**, **langchain-groq** | OpenCode Go is configured through the OpenAI-compatible adapter, with Groq available as a fallback provider. |
+| Persistence | **Postgres + pgvector**, `asyncpg` | Listings, ranking results, notifications, dangerous-neighborhood data, dedup keys, and run reports are stored in Postgres. |
+| Scraping | **Playwright**, `curl_cffi`, `httpx`, `selectolax` | Browser rendering handles Idealista detail pages; HTTP clients and HTML parsing handle portal search/detail extraction. |
+| CLI and packaging | **Typer**, `uv`, Docker Compose | The project runs as a local CLI with reproducible dependency management and a containerized database. |
+
+The project does not hand-write a custom `StateGraph` for the main
+workflow. Instead, it uses Deep Agents as the higher-level harness and
+therefore exercises LangGraph through the compiled graph runtime,
+subagent execution, and state/store backends.
+
 ## How it works
 
 Deep Apartment Finder runs as an agent-driven pipeline:
@@ -54,9 +76,10 @@ Deep Apartment Finder runs as an agent-driven pipeline:
 5. The notifier emails the top-ranked apartments once per day and
    records the send so repeat runs are idempotent.
 
-The project is designed as a local, inspectable system: every run can
-be observed in the terminal, replayed from the persisted run report,
-and traced in LangSmith when tracing credentials are configured.
+The project is designed as a local, inspectable agent system: every run
+can be observed in the terminal, replayed from the persisted run
+report, and traced in LangSmith when tracing credentials are
+configured.
 
 ## Requirements
 
@@ -213,9 +236,9 @@ src/deep_apartment_finder/
   ports/        # Repository, scraper, notifier, distance, and observer interfaces
   adapters/     # Postgres, scrapers, Gmail SMTP, distance, and observability I/O
   tools/        # LangChain tools exposed to the orchestrator and subagents
-  subagents/    # Registered specialist agents and their prompts
-  agent/        # Deep Agents orchestrator assembly
-  filesystem/   # Per-agent filesystem routing
+  subagents/    # Deep Agents specialist agents and their prompts
+  agent/        # create_deep_agent orchestration and compiled graph wiring
+  filesystem/   # Deep Agents backend routing over LangGraph store/state
   cli.py        # Typer command-line interface
   main.py       # Composition root
 ```
@@ -227,8 +250,11 @@ changes, persistence changes, notification providers, and ranking
 criteria isolated from each other.
 
 Specialist agents are registered up front and receive only the tools
-they need. Filesystem writes are routed per subagent so research notes,
-scraper artifacts, and orchestrator reports stay separated.
+they need. The orchestrator can still run deterministic Python phases
+for ranking and notification, but the LLM-driven portion is a compiled
+Deep Agents/LangGraph graph. Filesystem writes are routed per subagent
+so research notes, scraper artifacts, and orchestrator reports stay
+separated.
 
 ## Development
 
