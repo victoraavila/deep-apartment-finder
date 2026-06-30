@@ -1,7 +1,7 @@
 [project]
 name = "deep-apartment-finder"
 version = "0.1.0"
-description = "Agent-driven Zaragoza apartment finder (Fotocasa ingestion MVP, Sprint 1)."
+description = "Agent-driven Zaragoza apartment finder (Sprint 4: Idealista detail-page upgrade + parallel scraper execution)."
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
 dependencies = [

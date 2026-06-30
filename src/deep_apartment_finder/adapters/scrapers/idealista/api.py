@@ -174,6 +174,175 @@ def card_to_apartment(card: ListingCard) -> Apartment:
     )
 
 
+# --- detail page ----------------------------------------------------------
+#
+# Sprint 4 (Pillar A) added the detail-page fetch via the playwright
+# `BrowserContext` in `detail_client.py`. The captured HAR shows the
+# detail page carries a stable, machine-readable block — `<div
+# class="details-property_features"><ul>...</ul></div>` — with the
+# rooms, m², bathroom count, and a condition tag. The block is
+# present on every live listing and absent (or the page itself 404s)
+# on delisted ones. We extract:
+#
+# - `bathrooms` — the canonical gap from Sprint 3. Without it,
+#   `HardFilters(min_bathrooms=2)` rejects every Idealista row.
+# - `rooms`, `size_m2` — corroboration / re-parse fallback if the
+#   search card's numbers drifted.
+# - `description` — the long-form version, much longer than the
+#   search card's truncated `<p class="ellipsis">`. The LLM
+#   subagent uses it for `pet_policy` / `furnished` extraction.
+#
+# `lat` / `lng` are NOT in this block; they live behind a second
+# click in the real UI. Filling them is a separate ticket (Sprint
+# 5+).
+
+_DETAIL_FEATURES_SELECTOR = "div.details-property_features ul li"
+_DETAIL_DESCRIPTION_SELECTOR = (
+    "div.comment div:nth-of-type(1), "
+    "section.detail-info div.description, "
+    "div.details-property_description p, "
+    "div#description p"
+)
+
+
+def _parse_bathrooms(text: str | None) -> int | None:
+    """Pull a bathroom count out of a `<li>1 baño</li>`-style badge.
+
+    Spanish: `1 baño`, `2 baños`, `2 baños`, `1 aseo` (toilet only,
+    counted as a bathroom). The regex tolerates both the singular
+    (`baño`) and plural (`baños`) forms, and the informal `aseo`
+    wording some listings use.
+    """
+    if not text:
+        return None
+    m = re.search(r"(\d+)\s*(?:bañ[oa]s?|aseos?)", text, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_rooms_from_text(text: str | None) -> int | None:
+    """Pull a rooms count out of a `<li>N habitaciones</li>`-style badge."""
+    if not text:
+        return None
+    m = re.search(
+        r"(\d+)\s*(?:habitacion(?:es)?|hab\.|dormitorios?|rooms?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_size_m2_from_text(text: str | None) -> float | None:
+    """Pull a `m²` value out of a `<li>70 m² construidos</li>`-style badge."""
+    if not text:
+        return None
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*m[²2]", text, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_detail_page(html: str, *, url: str) -> dict[str, Any]:
+    """Parse the rendered detail-page HTML for a single listing.
+
+    Returns a dict with whichever of `bathrooms`, `rooms`, `size_m2`,
+    and `description` we could extract. The dict's keys are a
+    superset; missing fields are `None`. We never raise on a
+    partially-parseable page: a delisted listing still resolves to
+    a 200 with a 404-style body that lacks the features block, and
+    the scraper should treat that as "we got the card but no extra
+    data" rather than an error.
+
+    The `url` is accepted for symmetry with the Fotocasa
+    `parse_detail_page` (and for the future "this page mentions a
+    different id" disambiguation) but is not used today; the caller
+    already has the apartment's `external_id`.
+    """
+    del url  # unused for now; reserved for future disambiguation
+    parser = HTMLParser(html)
+    features: list[str] = []
+    for li in parser.css(_DETAIL_FEATURES_SELECTOR):
+        text = li.text(separator=" ", strip=True)
+        if text:
+            features.append(text)
+    feature_text = " | ".join(features)
+
+    bathrooms: int | None = None
+    rooms: int | None = None
+    size_m2: float | None = None
+    if feature_text:
+        bathrooms = _parse_bathrooms(feature_text)
+        rooms = _parse_rooms_from_text(feature_text)
+        size_m2 = _parse_size_m2_from_text(feature_text)
+
+    description: str | None = None
+    for sel in _DETAIL_DESCRIPTION_SELECTOR.split(", "):
+        node = parser.css_first(sel)
+        if node is not None:
+            text = node.text(separator=" ", strip=True)
+            if text:
+                description = text
+                break
+
+    return {
+        "bathrooms": bathrooms,
+        "rooms": rooms,
+        "size_m2": size_m2,
+        "description": description,
+    }
+
+
+def apply_detail_enrichment(
+    card: ListingCard,
+    detail: dict[str, Any],
+) -> Apartment:
+    """Build an `Apartment` from a `ListingCard` enriched with detail data.
+
+    Fields the detail page could not fill fall back to the search
+    card's values; this is the "soft 404" case the spec calls out
+    — the listing was delisted but the URL still resolves, and the
+    scraper has the card to fall back on.
+    """
+    raw = dict(card.raw or {})
+    return Apartment.from_raw_dict(
+        Source.IDEALISTA,
+        card.external_id,
+        card.url,
+        {
+            "title": card.title,
+            "price_eur": card.price_eur,
+            "rooms": detail.get("rooms") if detail.get("rooms") is not None else raw.get("rooms"),
+            "bathrooms": detail.get("bathrooms"),
+            "size_m2": (
+                detail.get("size_m2")
+                if detail.get("size_m2") is not None
+                else raw.get("size_m2")
+            ),
+            "address": raw.get("address"),
+            "lat": None,
+            "lng": None,
+            "description": (
+                detail.get("description")
+                if detail.get("description")
+                else raw.get("description")
+            ),
+            "raw": raw,
+        },
+    )
+
+
 # --- internal helpers ------------------------------------------------------
 
 
@@ -240,4 +409,9 @@ def _card_from_article(article: Any) -> ListingCard | None:
     )
 
 
-__all__ = ["parse_search_page", "card_to_apartment"]
+__all__ = [
+    "parse_search_page",
+    "parse_detail_page",
+    "card_to_apartment",
+    "apply_detail_enrichment",
+]

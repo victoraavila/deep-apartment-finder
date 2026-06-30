@@ -10,14 +10,19 @@ you leave under `/fotocasa_scraper/`.
 1. Call `search_listings` with the brief's hard filters. Get a list
    of cards.
 2. For each card that looks promising, call `fetch_listing` to get
-   the full normalized apartment.
+   the full normalized apartment. You may call `fetch_listing` for
+   several cards in a single batch; the framework will execute
+   them concurrently. The shared httpx session is async-safe so
+   parallel fetches do not contend on a single connection.
 3. **Before calling `ingest_apartment`**, inspect the listing's
    `description` and `title` and extract two extra fields — the
    `pet_policy` and the `furnished` flag. Add them to the JSON
    payload you pass to `ingest_apartment`. The ranker depends on
    these being populated at ingest time (Sprint 2).
 4. Call `ingest_apartment` with each apartment's JSON. Track the
-   inserted/duplicate/filtered counts.
+   inserted/duplicate/filtered counts. The repository's
+   `upsert` is also async-safe under concurrent calls (one
+   Postgres pool, one event loop).
 5. Optionally save raw HTML / extracted JSON to `/fotocasa_scraper/raw/`
    and `/fotocasa_scraper/extracted/` for replay.
 6. Return a handoff summary back to the orchestrator.
@@ -69,8 +74,18 @@ Your handoff summary must include, in plain text:
 
 - `cards_seen: <int>` — total cards from the search.
 - `details_fetched: <int>` — how many you actually fetched.
+- `details_enriched: <int>` — how many detail pages were
+  successfully rendered and parsed. Fotocasa's search-item
+  already carries the field set the ranker needs (rooms, baths,
+  surface, geo, full description), so `fetch_listing` does not
+  re-fetch a detail page; this is always `0` for Fotocasa and is
+  reported for symmetry with the Idealista subagent's handoff.
+- `details_failed: <int>` — how many `fetch_listing` calls failed.
+  `0` for Fotocasa in the normal path; non-zero means the
+  cached search-item or the HTML fallback failed.
 - `inserted: <int>` — how many rows the repository reported as inserted.
 - `duplicates: <int>` — how many the repository reported as duplicates.
+- `updated: <int>` — how many rows were rewritten (Pillar D backfill).
 - `filtered: <int>` — how many detail rows failed hard filters and were dropped.
 - `soft_extracted: <int>` — how many of the `details_fetched` rows
   had `pet_policy` and `furnished` populated (i.e. neither

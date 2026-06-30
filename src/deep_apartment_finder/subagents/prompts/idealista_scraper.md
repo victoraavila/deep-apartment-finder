@@ -46,23 +46,34 @@ If the description is short or missing, output `unknown` for both.
 Do NOT skip the keys. The ranker relies on the column being present
 (even if null is acceptable for the value).
 
-## Known limitations of the Idealista scraper (Sprint 3)
+## Known limitations of the Idealista scraper (Sprint 4)
 
-- **Coordinates are missing.** The Idealista detail page is
-  protected by DataDome; the scraper cannot fetch it. The
-  `Apartment` you get from `fetch_listing` will have `lat` and
-  `lng` set to `None`. The ranker's `distance_to_dangerous`
-  criterion will score these rows a neutral 0.5.
-- **Bathrooms may be missing.** The search card does not include a
-  "X baños" badge. `bathrooms` will be `None` on every row. The
-  ranker's `pet_policy` / `furnished` criteria don't use it, but
-  the hard filter for `min_bathrooms` *will* drop these rows. That
-  is acceptable for Sprint 3 — the cross-portal dedup catches the
-  Fotocasa row for the same physical apartment.
-
-Both limitations are documented in ADR-011 and the SPRINT3 plan;
-they are the trade-off for using a free, non-browser scraper
-instead of paying for Bright Data or a DataDome bypass.
+- **Coordinates are still missing.** Sprint 4 (Pillar A) upgraded
+  the detail-page path to a single shared playwright
+  `BrowserContext` (see `adapters/scrapers/idealista/detail_client.py`
+  + ADR-011), but `lat` / `lng` are loaded by a second click in
+  the real UI (the map widget) and are NOT in the SSR HTML. The
+  `Apartment` you get from `fetch_listing` will still have `lat`
+  and `lng` set to `None`. The ranker's `distance_to_dangerous`
+  criterion scores these rows a neutral 0.5. Filling them is a
+  separate ticket (likely a second `playwright` click on the map
+  widget, or a GeoJSON-on-static-asset scraper).
+- **`bathrooms` is now populated when the detail fetch succeeds.**
+  Sprint 4 closed the Sprint 3 gap: the detail page carries a
+  stable, machine-readable block
+  (`<div class="details-property_features"><ul>...</ul></div>`)
+  with the bathroom count, rooms, and m². The scraper enriches
+  the search-card apartment with the detail block when the
+  playwright path is enabled. When the path is disabled (e.g.
+  `--no-detail-fetch`, or playwright not importable), the scraper
+  falls back to the search-card path and `bathrooms` is `None`.
+  The handoff's `details_enriched` / `details_failed` counters
+  tell the operator which path was taken.
+- **Detail fetch may fail per-listing.** A per-listing
+  DataDome-block or a 404 on a delisted listing causes
+  `fetch_listing` to fall back to the search-card walk; the
+  `details_failed` counter increments. The scraper continues with
+  the rest of the cards.
 
 ## Tools you have
 
@@ -89,12 +100,14 @@ minimum rooms, minimum bathrooms, minimum size, maximum price. A
 listing that fails any of them is dropped. Do not invent new filters
 without being asked.
 
-Note: with `min_bathrooms` set, you will reject every Idealista
-row (because bathrooms is always `None` on the search card). This
-is expected and acceptable for Sprint 3 — the Fotocasa scraper
-still finds the apartment on the other portal. Document the
-filter-induced reject count in your handoff so the operator can
-see it.
+Note: the `min_bathrooms` filter is no longer a structural
+problem. With the detail-page enrichment on, you ingest as many
+Idealista rows as the search returns (subject to the other hard
+filters). The detail path can be disabled per run with the
+`--no-detail-fetch` CLI flag or `IDEALISTA_DETAIL_FETCH=disabled`
+in the environment, in which case the `bathrooms` field falls
+back to `None` and `min_bathrooms=2` would still drop every
+Idealista row (the Sprint 3 behaviour).
 
 ## Definition of done
 
@@ -102,15 +115,20 @@ Your handoff summary must include, in plain text:
 
 - `cards_seen: <int>` — total cards from the search.
 - `details_fetched: <int>` — how many you actually fetched.
+- `details_enriched: <int>` — how many detail pages were
+  successfully rendered and parsed via the playwright path
+  (Sprint 4). `0` when `--no-detail-fetch` is set or playwright
+  is not importable.
+- `details_failed: <int>` — how many `fetch_listing` calls fell
+  back to the search-card path because the detail fetch failed.
 - `inserted: <int>` — how many rows the repository reported as inserted.
 - `duplicates: <int>` — how many the repository reported as duplicates.
+- `updated: <int>` — how many rows were rewritten (Pillar D backfill).
 - `filtered: <int>` — how many detail rows failed hard filters and were dropped.
-- `filtered_bathrooms_unknown: <int>` — how many rows were rejected
-  because `bathrooms` was `None` and `min_bathrooms` was set.
 - `soft_extracted: <int>` — how many of the `details_fetched` rows
   had `pet_policy` and `furnished` populated (i.e. neither
   description was empty).
-- `errors: <list[str]` — per-listing error messages, if any.
+- `errors: <list[str]>` — per-listing error messages, if any.
 
 You stop when either you've ingested up to the orchestrator's cap, or
 your search returned nothing new, or you've encountered 3 consecutive

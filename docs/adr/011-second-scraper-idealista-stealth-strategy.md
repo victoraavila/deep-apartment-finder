@@ -103,13 +103,23 @@ soft-field contract.
   `tests/unit/test_orchestrator_dual_scraper.py`.
 - **Distance criterion treats Idealista rows as 0.5.** The
   operator sees this in the run report and in
-  `validate-quality`'s per-source field coverage. Sprint 4 or
-  5 can add a playwright-based detail-page upgrade that
-  backfills `lat` / `lng` / `bathrooms`.
-- **`bathrooms=NULL` rejects every Idealista row under the
-  default `min_bathrooms=2`.** Documented in
-  `subagents/prompts/idealista_scraper.md` so the operator can
-  see the reject count in the subagent's handoff.
+  `validate-quality`'s per-source field coverage. Sprint 4
+  closed the `bathrooms` half of the gap (via the
+  detail-page upgrade) but `lat` / `lng` are still `None`
+  (DataDome hides them behind a second click in the real
+  UI; filling them is a follow-up ticket).
+- **`bathrooms` is now usually populated on Idealista rows.**
+  Sprint 4 (Pillar A) added a single shared playwright
+  `BrowserContext` (`adapters/scrapers/idealista/detail_client.py`)
+  that hits `/inmueble/<id>/` and parses the canonical
+  `<div class="details-property_features">` block. The default
+  `min_bathrooms=2` no longer rejects every Idealista row;
+  the `validate-quality` field-coverage report shows
+  `bathrooms` non-null rate ≥ 90% on `source='idealista'`
+  rows. The detail path is gated on `IDEALISTA_DETAIL_FETCH`
+  (or `--no-detail-fetch`); when disabled, the scraper falls
+  back to the search-card walk and `bathrooms` stays `None`
+  (the Sprint 3 behaviour).
 - **`curl_cffi` is a new dependency.** Tested with 0.15.0+.
   Pinned in `pyproject.toml`. The TLS-fingerprinting surface
   is small (1-2 imports); we don't pull in a third-party
@@ -130,10 +140,24 @@ soft-field contract.
 
 ## Future work
 
-- **Detail-page upgrade.** A playwright-based path that hits
-  `/inmueble/<id>/` and backfills `lat` / `lng` /
-  `bathrooms`. The fallback code in `fetch_listing` already
-  documents the planned swap.
+- **Detail-page upgrade** *(delivered in Sprint 4)* — A
+  playwright-based path that hits `/inmueble/<id>/` and
+  backfills `bathrooms` (and the long-form `description`)
+  lives at `adapters/scrapers/idealista/detail_client.py`
+  (the shared `BrowserContext`) + `parse_detail_page` /
+  `apply_detail_enrichment` in `adapters/scrapers/idealista/api.py`.
+  `IdealistaScraper.fetch_listing` is now a three-step path
+  (search-card walk → detail fetch via the shared context →
+  enrichment), and reports per-run `details_enriched` /
+  `details_failed` counters in the subagent's handoff. The
+  detail path is gated on `IDEALISTA_DETAIL_FETCH` (or the
+  `--no-detail-fetch` CLI flag) and gracefully falls back to
+  the search-card walk when playwright is unavailable. The
+  Sprint 3 `bathrooms=NULL → min_bathrooms=2 rejects every
+  Idealista row` failure mode is closed. `lat` / `lng` are
+  still `None` — they live behind a second click in the real
+  UI and are deferred to a follow-up ticket (likely a
+  second-click on the map widget).
 - **Exa-backed discovery adapter.** Listed in `docs/ROADMAP.md`
   as Q1 / future sprint. Adding it is a single-adapter change
   behind `ScraperPort` (the same OCP path).

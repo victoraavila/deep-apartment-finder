@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.language_models import BaseChatModel
+
 from deep_apartment_finder.agent.orchestrator import build_orchestrator
 from tests._fakes import (
     FakeScraper,
@@ -21,8 +23,36 @@ from tests._fakes import (
 )
 
 
-class _NoopChatModel:
-    """Minimal stand-in for a `BaseChatModel` so the builder can run."""
+class _NoopChatModel(BaseChatModel):
+    """Minimal stand-in for a `BaseChatModel` so the builder can run.
+
+    Sprint 4: the orchestrator's `build_orchestrator` now passes
+    `llm` to `create_sub_agent(...)` so the parallel
+    `run_scrapers` tool can compile its subagent graphs at build
+    time. `create_sub_agent` calls `resolve_model(...)` which
+    takes the early-return path when the argument is already a
+    `BaseChatModel` instance — so the test fakes must subclass
+    `BaseChatModel` (the prior plain Python class failed the
+    `isinstance` check and the build crashed).
+
+    `_generate` and `_agenerate` are abstract; we provide
+    minimal no-op implementations because the test patches
+    `create_deep_agent` and never actually invokes the model.
+    """
+
+    @property
+    def _llm_type(self) -> str:
+        return "noop-test"
+
+    def _generate(self, messages: Any, stop: Any = None, **kwargs: Any) -> Any:
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        return ChatResult(generations=[ChatGeneration(message=None)])
+
+    async def _agenerate(self, messages: Any, stop: Any = None, **kwargs: Any) -> Any:
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        return ChatResult(generations=[ChatGeneration(message=None)])
 
     def bind_tools(self, *args: Any, **kwargs: Any) -> object:
         return self
