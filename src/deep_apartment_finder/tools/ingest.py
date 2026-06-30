@@ -28,6 +28,9 @@ from deep_apartment_finder.ports.apartment_repository import (
     Updated,
 )
 
+_PET_POLICY_VALUES = {"allowed", "negotiated", "not_allowed", "unknown"}
+_FURNISHED_VALUES = {"true", "false", "unknown"}
+
 
 def make_ingest_apartment_tool(repo: ApartmentRepository) -> BaseTool:
     """Build the `ingest_apartment` tool bound to a specific repository.
@@ -74,6 +77,9 @@ def make_ingest_apartment_tool(repo: ApartmentRepository) -> BaseTool:
             url = str(data["url"])
         except KeyError as exc:
             return json.dumps({"status": "error", "message": f"missing field: {exc}"})
+
+        data["pet_policy"] = _normalize_pet_policy(data.get("pet_policy"))
+        data["furnished"] = _normalize_furnished(data.get("furnished"))
 
         # Sprint 3 — drop invalid coordinates (Pillar D). The scraper
         # might leave (0, 0) or a far-flung placeholder; the DB must
@@ -134,3 +140,31 @@ def make_ingest_apartment_tool(repo: ApartmentRepository) -> BaseTool:
         return json.dumps({"status": "duplicate", "external_id": result.external_id})
 
     return ingest_apartment
+
+
+def _normalize_pet_policy(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if s in {"notallowed", "not_allowed", "no_pets", "pets_not_allowed"}:
+        return "not_allowed"
+    if s in _PET_POLICY_VALUES:
+        return s
+    return "unknown"
+
+
+def _normalize_furnished(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s in _FURNISHED_VALUES:
+        return s
+    if s in {"yes", "y", "si", "furnished"}:
+        return "true"
+    if s in {"no", "n", "unfurnished", "sin amueblar", "sin_amueblar"}:
+        return "false"
+    return "unknown"
