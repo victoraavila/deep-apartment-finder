@@ -41,6 +41,9 @@ from deep_apartment_finder.adapters.observability.tracing import (
     root_trace,
 )
 from deep_apartment_finder.adapters.postgres.migrations import apply_migrations
+from deep_apartment_finder.adapters.scrapers.idealista.detail_client import (
+    install_playwright_chromium,
+)
 from deep_apartment_finder.config import get_settings
 from deep_apartment_finder.domain.geo import compute_dedup_key
 from deep_apartment_finder.main import (
@@ -100,6 +103,20 @@ def migrate(
     except Exception as exc:  # noqa: BLE001
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+# --- run -------------------------------------------------------------------
+
+
+@app.command("install-browsers")
+def install_browsers() -> None:
+    """Install browser binaries needed by Playwright-backed scrapers."""
+    try:
+        install_playwright_chromium()
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"error: failed to install Playwright Chromium: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("Playwright Chromium is installed.")
 
 
 # --- run -------------------------------------------------------------------

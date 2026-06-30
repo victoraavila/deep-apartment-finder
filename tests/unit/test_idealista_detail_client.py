@@ -27,6 +27,7 @@ import pytest
 
 from deep_apartment_finder.adapters.scrapers.idealista.detail_client import (
     IdealistaDetailClient,
+    _BrowserResources,
 )
 
 
@@ -86,12 +87,44 @@ class _FakeContext:
         self.closed = True
 
 
+class _FakeBrowser:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakePlaywright:
+    def __init__(self) -> None:
+        self.stopped = False
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
 def _factory_returning(ctx: _FakeContext):
     """Build a closure that returns `ctx` when awaited."""
 
     async def _factory(*, user_agent: str | None) -> _FakeContext:
         ctx._user_agent = user_agent
         return ctx
+
+    return _factory
+
+
+def _factory_returning_resources(
+    ctx: _FakeContext,
+    browser: _FakeBrowser,
+    playwright: _FakePlaywright,
+):
+    async def _factory(*, user_agent: str | None) -> _BrowserResources:
+        ctx._user_agent = user_agent
+        return _BrowserResources(
+            playwright=playwright,
+            browser=browser,
+            context=ctx,
+        )
 
     return _factory
 
@@ -138,6 +171,57 @@ async def test_same_context_is_reused_across_fetches() -> None:
     # One context was created, three pages were opened on it.
     assert ctx.new_page_calls == 3
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fetches_share_one_context_init() -> None:
+    """Parallel tool calls must not launch one browser per listing."""
+    import asyncio
+
+    ctx = _FakeContext()
+    launches = {"n": 0}
+
+    async def _factory(*, user_agent: str | None) -> _FakeContext:
+        launches["n"] += 1
+        await asyncio.sleep(0.01)
+        return ctx
+
+    client = IdealistaDetailClient(enabled=True)
+    client._context_factory = _factory  # type: ignore[attr-defined]
+    urls = [f"https://x/{i}" for i in range(5)]
+    for url in urls:
+        ctx.contents[url] = f"<html>{url}</html>"
+
+    out = await asyncio.gather(*(client.fetch_detail_html(url) for url in urls))
+
+    assert len([html for html in out if html is not None]) == 5
+    assert launches["n"] == 1
+    assert ctx.new_page_calls == 5
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_launch_failure_disables_after_one_attempt() -> None:
+    """Missing Chromium should produce one failed launch, not N warnings."""
+    import asyncio
+
+    launches = {"n": 0}
+
+    async def _factory(*, user_agent: str | None) -> Any:
+        launches["n"] += 1
+        await asyncio.sleep(0.01)
+        raise RuntimeError("Chromium not installed")
+
+    client = IdealistaDetailClient(enabled=True)
+    client._context_factory = _factory  # type: ignore[attr-defined]
+
+    out = await asyncio.gather(
+        *(client.fetch_detail_html(f"https://x/{i}") for i in range(5))
+    )
+
+    assert out == [None, None, None, None, None]
+    assert launches["n"] == 1
+    assert client.is_enabled is False
 
 
 # --- launch failure -> disable --------------------------------------------
@@ -219,6 +303,26 @@ async def test_close_is_idempotent() -> None:
     await client.fetch_detail_html("https://x/1")
     await client.close()
     assert ctx.closed is True
+
+
+@pytest.mark.asyncio
+async def test_close_closes_browser_and_playwright_resources() -> None:
+    ctx = _FakeContext()
+    browser = _FakeBrowser()
+    playwright = _FakePlaywright()
+    client = IdealistaDetailClient(enabled=True)
+    client._context_factory = _factory_returning_resources(  # type: ignore[attr-defined]
+        ctx,
+        browser,
+        playwright,
+    )
+    await client.fetch_detail_html("https://x/1")
+
+    await client.close()
+
+    assert ctx.closed is True
+    assert browser.closed is True
+    assert playwright.stopped is True
     # Second close: still safe.
     await client.close()
     assert ctx.closed is True

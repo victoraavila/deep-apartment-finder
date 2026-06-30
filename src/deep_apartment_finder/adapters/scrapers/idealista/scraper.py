@@ -49,6 +49,7 @@ from deep_apartment_finder.adapters.scrapers.base import polite_sleep
 from deep_apartment_finder.adapters.scrapers.idealista.api import (
     apply_detail_enrichment,
     card_to_apartment,
+    detail_page_to_apartment,
     parse_detail_page,
     parse_search_page,
 )
@@ -107,6 +108,7 @@ class IdealistaScraper(ScraperPort):
             )
         self._details_enriched = 0
         self._details_failed = 0
+        self._cards_by_external_id: dict[str, ListingCard] = {}
 
     @property
     def details_enriched(self) -> int:
@@ -185,6 +187,7 @@ class IdealistaScraper(ScraperPort):
                 if card.external_id in seen_external_ids:
                     continue
                 seen_external_ids.add(card.external_id)
+                self._cards_by_external_id[card.external_id] = card
                 yield card
                 yielded += 1
                 if self._max_cards is not None and yielded >= self._max_cards:
@@ -223,39 +226,31 @@ class IdealistaScraper(ScraperPort):
             raise RuntimeError(f"idealista: could not extract id from {url!r}")
         external_id = m.group(1)
 
-        # Walk search pages to find the card. The walk is a side
-        # effect: we return the matching card's raw fields, and on
-        # the "right" page we hand the HTML to the detail parser
-        # (so the soft-404 case still has SOMETHING to parse).
-        last_html: str | None = None
-        card: ListingCard | None = None
-        page = 1
-        while True:
-            page_url = search_url("Zaragoza", page=page)
-            try:
-                response = request_with_timeout(self._session, page_url)
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(
-                    f"idealista fetch_listing: page {page} request failed: {exc}"
-                ) from exc
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"idealista fetch_listing: page {page} returned {response.status_code}"
-                )
-            last_html = response.text
-            cards = parse_search_page(last_html)
-            for c in cards:
-                if c.external_id == external_id:
-                    card = c
-                    break
-            if card is not None:
-                break
-            if not cards or len(cards) < 15:
+        # Normal agent flow calls `search_listings` first, which fills
+        # `_cards_by_external_id`; use that cache instead of re-walking
+        # the search pages for every selected card. Direct unit calls
+        # and operator debugging still get the old search-walk fallback.
+        card = self._cards_by_external_id.get(external_id)
+        if card is None:
+            card = await self._find_card_by_search_walk(external_id)
+
+        if card is None:
+            if not self._detail.is_enabled:
                 raise RuntimeError(
                     f"idealista fetch_listing: id {external_id} not found in any page"
                 )
-            page += 1
-            await polite_sleep(self._settings.idealista_scraper_delay_seconds)
+            detail_html = await self._detail.fetch_detail_html(url)
+            if detail_html is None:
+                self._details_failed += 1
+                raise RuntimeError(
+                    f"idealista fetch_listing: id {external_id} not found in any page"
+                )
+            self._details_enriched += 1
+            return detail_page_to_apartment(
+                detail_html,
+                url=url,
+                external_id=external_id,
+            )
 
         # Now enrich. The detail client is opt-in; if it's disabled
         # (or the launch fails) we return the search-card apartment
@@ -282,6 +277,30 @@ class IdealistaScraper(ScraperPort):
 
         self._details_enriched += 1
         return apply_detail_enrichment(card, detail)
+
+    async def _find_card_by_search_walk(self, external_id: str) -> ListingCard | None:
+        page = 1
+        while True:
+            page_url = search_url("Zaragoza", page=page)
+            try:
+                response = request_with_timeout(self._session, page_url)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f"idealista fetch_listing: page {page} request failed: {exc}"
+                ) from exc
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"idealista fetch_listing: page {page} returned {response.status_code}"
+                )
+            cards = parse_search_page(response.text)
+            for card in cards:
+                self._cards_by_external_id[card.external_id] = card
+                if card.external_id == external_id:
+                    return card
+            if not cards or len(cards) < 15:
+                return None
+            page += 1
+            await polite_sleep(self._settings.idealista_scraper_delay_seconds)
 
     async def close(self) -> None:
         # `curl_cffi` sessions expose `close()`. Wrap in try/except so

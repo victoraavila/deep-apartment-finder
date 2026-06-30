@@ -78,9 +78,12 @@ Do NOT skip the keys. The ranker relies on the column being present
 ## Tools you have
 
 - `search_listings` — the only way to get a list of cards.
-- `fetch_listing` — fetch and parse a single listing. **Does NOT
-  hit Idealista's detail page** (see limitations above); returns
-  the data the search card already gave us.
+- `fetch_listing` — fetch and parse a single listing. It first uses
+  the search-card data from `search_listings`, then attempts the
+  Sprint 4 playwright detail-page enrichment to populate
+  `bathrooms`, `rooms`, `size_m2`, and the long-form
+  `description`. If the detail page cannot be fetched, it falls
+  back to the search-card data.
 - `ingest_apartment` — persist one listing.
 - `save_snapshot` — write a debug file under `/idealista_scraper/raw/`.
 - Filesystem tools (`read_file`, `ls`, etc.) — for reading the cache

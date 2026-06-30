@@ -85,9 +85,9 @@ async def send_notification(
         from_address, to_address: SMTP From/To.
         subject_prefix: prefix for the email subject.
         sent_on: the date the notification is recorded under; defaults
-            to today (UTC).
+            to today in the process-local timezone.
     """
-    sent_on = sent_on or _now_utc().date()
+    sent_on = sent_on or date.today()
     top: list[dict[str, Any]] = list(ranking.get("top") or [])
 
     subject = f"{subject_prefix} top {len(top)} for {sent_on.isoformat()}"

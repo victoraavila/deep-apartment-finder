@@ -48,9 +48,9 @@ docker compose up -d
 # 4. Apply migrations (idempotent; applies 001, 002, and 003)
 uv run python -m deep_apartment_finder migrate
 
-# 5. Install the playwright browser for the Idealista detail-page fetch
-#    (only required if IDEALISTA_DETAIL_FETCH=true; one-time install).
-uv run playwright install chromium
+# 5. Install the playwright browser for the Idealista detail-page fetch.
+#    Fresh runs can also auto-install it on first use when missing.
+uv run deep-apartment-finder install-browsers
 
 # 6. First run: the researcher subagent bootstraps the
 #    dangerous-neighborhoods table. After it returns, re-run.
@@ -125,6 +125,7 @@ scraper subagent sees every listing as `duplicate` or
 | Command | What it does |
 | --- | --- |
 | `migrate` | Apply pending SQL migrations (001 + 002 + 003). |
+| `install-browsers` | Install Playwright Chromium for the Idealista detail-page fetch. The `run` command also retries with an automatic install when Chromium is missing. |
 | `run` | Drive the orchestrator end-to-end. Sprint 4 fires the two scraper subagents concurrently via the `run_scrapers` tool, prints phase headers + counters to **stderr** in real time, and persists a structured `RunReport` to `/orchestrator/reports/<run-uuid>.json` and the `run_reports` Postgres table. |
 | `run --no-detail-fetch` | Sprint 4: disable the playwright-based Idealista detail page fetch for that run. The scraper falls back to the search-card path; `bathrooms` stays `None` on every Idealista row. |
 | `run --trace` | Compatibility flag. LangSmith tracing is enabled automatically whenever `LANGSMITH_API_KEY` is configured; without that key tracing stays off. |
@@ -219,4 +220,7 @@ Decisions: [`docs/adr/`](docs/adr/).
   detail-page upgrade populates an existing column.
 - **No new dependency** at the Python level (playwright was
   already in `pyproject.toml` from Sprint 1). One new runtime
-  install: `uv run playwright install chromium`.
+  install is wrapped by the project CLI:
+  `uv run deep-apartment-finder install-browsers`. If Chromium is
+  missing during a normal run, the detail client installs it and
+  retries once.

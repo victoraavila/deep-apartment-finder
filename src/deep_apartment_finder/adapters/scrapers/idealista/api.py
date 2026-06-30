@@ -203,6 +203,17 @@ _DETAIL_DESCRIPTION_SELECTOR = (
     "div.details-property_description p, "
     "div#description p"
 )
+_DETAIL_TITLE_SELECTOR = (
+    "h1, "
+    "span.main-info__title-main, "
+    "h1.main-info__title-main, "
+    "title"
+)
+_DETAIL_PRICE_SELECTOR = (
+    "span.info-data-price, "
+    "div.info-data-price span.txt-bold, "
+    "span.txt-bold"
+)
 
 
 def _parse_bathrooms(text: str | None) -> int | None:
@@ -343,6 +354,64 @@ def apply_detail_enrichment(
     )
 
 
+def detail_page_to_apartment(html: str, *, url: str, external_id: str) -> Apartment:
+    """Build an `Apartment` directly from rendered detail-page HTML.
+
+    This is the fallback for a listing URL whose search card is no
+    longer present in the current paginated search results. Detail
+    pages do not always expose every search-card field, so missing
+    values remain `None` and the downstream hard filter can decide
+    whether the row is usable.
+    """
+    detail = parse_detail_page(html, url=url)
+    parser = HTMLParser(html)
+
+    title: str | None = None
+    for sel in _DETAIL_TITLE_SELECTOR.split(", "):
+        node = parser.css_first(sel)
+        if node is None:
+            continue
+        text = node.text(separator=" ", strip=True)
+        if text:
+            title = text.replace(" - Idealista", "").strip()
+            break
+
+    price_eur: float | None = None
+    for sel in _DETAIL_PRICE_SELECTOR.split(", "):
+        node = parser.css_first(sel)
+        if node is None:
+            continue
+        price_eur = _normalize_price(node.text(separator=" ", strip=True))
+        if price_eur is not None:
+            break
+
+    meta_description = None
+    meta = parser.css_first('meta[name="description"]')
+    if meta is not None and meta.attributes:
+        meta_description = meta.attributes.get("content")
+
+    return Apartment.from_raw_dict(
+        Source.IDEALISTA,
+        external_id,
+        url,
+        {
+            "title": title,
+            "price_eur": price_eur,
+            "rooms": detail.get("rooms"),
+            "bathrooms": detail.get("bathrooms"),
+            "size_m2": detail.get("size_m2"),
+            "address": title,
+            "lat": None,
+            "lng": None,
+            "description": detail.get("description") or meta_description,
+            "raw": {
+                "detail_only": True,
+                "description": detail.get("description") or meta_description,
+            },
+        },
+    )
+
+
 # --- internal helpers ------------------------------------------------------
 
 
@@ -414,4 +483,5 @@ __all__ = [
     "parse_detail_page",
     "card_to_apartment",
     "apply_detail_enrichment",
+    "detail_page_to_apartment",
 ]

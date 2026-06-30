@@ -72,6 +72,7 @@ def _settings(**kwargs: Any) -> Settings:
         scraper_user_agent="test-ua",
         scraper_delay_seconds=0.0,
         idealista_scraper_delay_seconds=0.0,
+        idealista_detail_fetch=False,
     )
     base.update(kwargs)
     return Settings(**base)
@@ -218,6 +219,31 @@ async def test_fetch_listing_finds_id_on_first_page() -> None:
     assert apt.external_id == "109872751"
     assert apt.title is not None
     assert apt.price_eur is not None
+    assert len(session.calls) == 1
+    await scraper.close()
+
+
+@pytest.mark.asyncio
+async def test_fetch_listing_uses_search_cache_after_search_listings() -> None:
+    """Agent flow searches first, then fetches selected cards.
+
+    The scraper should reuse the card cache from `search_listings`
+    instead of re-requesting page 1 for every `fetch_listing` call.
+    """
+    session = _FakeSession([_page1_response()])
+    scraper = IdealistaScraper(
+        settings=_settings(idealista_detail_fetch=False),
+        session=session,
+    )
+    cards = []
+    async for card in scraper.search_listings(HardFilters()):
+        cards.append(card)
+        if len(cards) == 1:
+            break
+
+    apt = await scraper.fetch_listing(cards[0].url)
+
+    assert apt.external_id == cards[0].external_id
     assert len(session.calls) == 1
     await scraper.close()
 

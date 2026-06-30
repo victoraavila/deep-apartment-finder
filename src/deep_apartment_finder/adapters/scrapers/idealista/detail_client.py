@@ -38,9 +38,19 @@ checks both before invoking the client.
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _BrowserResources:
+    playwright: Any
+    browser: Any
+    context: Any
 
 
 class IdealistaDetailClient:
@@ -71,7 +81,10 @@ class IdealistaDetailClient:
         # is the whole reason this module is gated on a runtime
         # check).
         self._context: Any = None
+        self._browser: Any = None
+        self._playwright: Any = None
         self._closed: bool = False
+        self._context_lock: Any = None
         # Tests inject a fake `_context_factory` to avoid spinning
         # up a real browser; production code uses the late import
         # in `_default_context_factory`. The factory has the
@@ -101,14 +114,8 @@ class IdealistaDetailClient:
             return None
         if self._closed:
             return None
-        try:
-            context = await self._ensure_context()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "idealista detail client: context init failed, falling back: %s",
-                exc,
-            )
-            self._enabled = False
+        context = await self._ensure_context()
+        if context is None:
             return None
         try:
             page = await context.new_page()
@@ -143,25 +150,64 @@ class IdealistaDetailClient:
         Safe to call multiple times. After `close()`, subsequent
         `fetch_detail_html` calls return `None`.
         """
-        if self._closed:
-            return
-        self._closed = True
-        context = self._context
-        self._context = None
-        if context is None:
-            return
-        try:
-            await context.close()
-        except Exception:  # noqa: BLE001
-            pass
+        lock = self._get_context_lock()
+        async with lock:
+            if self._closed:
+                return
+            self._closed = True
+            context = self._context
+            browser = self._browser
+            playwright = self._playwright
+            self._context = None
+            self._browser = None
+            self._playwright = None
+        for resource in (context, browser):
+            if resource is None:
+                continue
+            try:
+                await resource.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if playwright is not None:
+            try:
+                await playwright.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
-    async def _ensure_context(self) -> Any:
+    def _get_context_lock(self) -> Any:
+        if self._context_lock is None:
+            import asyncio
+
+            self._context_lock = asyncio.Lock()
+        return self._context_lock
+
+    async def _ensure_context(self) -> Any | None:
         if self._context is not None:
             return self._context
-        self._context = await self._context_factory(
-            user_agent=self._user_agent,
-        )
-        return self._context
+        lock = self._get_context_lock()
+        async with lock:
+            if self._context is not None:
+                return self._context
+            if not self._enabled or self._closed:
+                return None
+            try:
+                created = await self._context_factory(
+                    user_agent=self._user_agent,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "idealista detail client: context init failed, falling back: %s",
+                    exc,
+                )
+                self._enabled = False
+                return None
+            if isinstance(created, _BrowserResources):
+                self._playwright = created.playwright
+                self._browser = created.browser
+                self._context = created.context
+            else:
+                self._context = created
+            return self._context
 
 
 async def _default_context_factory(*, user_agent: str | None) -> Any:
@@ -180,20 +226,54 @@ async def _default_context_factory(*, user_agent: str | None) -> Any:
             "detail-page fetch"
         ) from exc
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(headless=True)
+    browser = None
     try:
+        try:
+            browser = await pw.chromium.launch(headless=True)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_missing_browser_error(exc):
+                raise
+            await pw.stop()
+            install_playwright_chromium()
+            pw = await async_playwright().start()
+            browser = await pw.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent=user_agent or _DEFAULT_USER_AGENT,
             locale="es-ES",
         )
-    finally:
-        # `BrowserContext` owns the `Browser`; we close the context
-        # and let `playwright` reap the browser via its own event.
-        # We do NOT call `browser.close()` here because the context
-        # is the long-lived handle the scraper reuses; closing the
-        # browser would tear down the context on the next page.
-        pass
-    return context
+    except Exception:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await pw.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    return _BrowserResources(playwright=pw, browser=browser, context=context)
+
+
+def _is_missing_browser_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return "Executable doesn't exist" in text or "playwright install" in text
+
+
+def install_playwright_chromium() -> None:
+    """Install the Chromium browser binary required by Playwright."""
+    logger.info("installing playwright chromium browser")
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "playwright",
+            "install",
+            "chromium",
+            "--no-progress",
+        ],
+        check=True,
+    )
 
 
 _DEFAULT_USER_AGENT = (
@@ -219,5 +299,6 @@ def playwright_importable() -> bool:
 
 __all__ = [
     "IdealistaDetailClient",
+    "install_playwright_chromium",
     "playwright_importable",
 ]
