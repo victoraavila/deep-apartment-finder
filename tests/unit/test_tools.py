@@ -83,6 +83,44 @@ async def test_ingest_apartment_returns_error_on_missing_field():
     assert data["status"] == "error"
 
 
+@pytest.mark.asyncio
+async def test_ingest_apartment_normalizes_llm_soft_enum_values():
+    repo = InMemoryApartmentRepository()
+    tool = make_ingest_apartment_tool(repo)
+    apt = make_apartment(external_id="x1")
+    payload = apt.to_ingest_dict()
+    payload["pet_policy"] = "Not Allowed"
+    payload["furnished"] = True
+
+    out = await tool.arun(json.dumps(payload))
+
+    data = json.loads(out)
+    assert data["status"] == "inserted"
+    rows = await repo.list_all()
+    stored = rows[0][1]
+    assert stored.pet_policy == "not_allowed"
+    assert stored.furnished == "true"
+
+
+@pytest.mark.asyncio
+async def test_ingest_apartment_normalizes_unknown_soft_enum_values():
+    repo = InMemoryApartmentRepository()
+    tool = make_ingest_apartment_tool(repo)
+    apt = make_apartment(external_id="x1")
+    payload = apt.to_ingest_dict()
+    payload["pet_policy"] = "maybe"
+    payload["furnished"] = "MAYBE"
+
+    out = await tool.arun(json.dumps(payload))
+
+    data = json.loads(out)
+    assert data["status"] == "inserted"
+    rows = await repo.list_all()
+    stored = rows[0][1]
+    assert stored.pet_policy == "unknown"
+    assert stored.furnished == "unknown"
+
+
 # --- Sprint 3: backfill (`updated`) + dedup_key + coord normalization -----
 
 
