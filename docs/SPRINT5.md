@@ -694,6 +694,76 @@ phase registered in `_DeterministicSteps`.
     `search_truncated_by_time_budget` per portal, and a
     top-level `dedup_siblings_collapsed`. A test asserts the
     JSON shape and value ranges.
+11. **Top-N bumped to 10.** `Settings.rank_top_n` defaults
+    to 10. A run with the new default produces a top-N list
+    of length 10 (or fewer if the ranker pool is smaller).
+    The notifier's email body iterates all 10 rows. A test
+    with a fake `RankingRepository` returning 10 top-N
+    entries asserts the email body contains all 10 titles
+    and the `top_n_returned` field is 10.
+12. **Verifier — `live` happy path.** A `verify_listing` call
+    against a fake `ScraperPort` that returns `status="live"`
+    produces a top-N row with `verification_status="live"`
+    in the run report. No DB write, no re-score. A test
+    asserts the row's score is unchanged.
+13. **Verifier — `changed` path.** A `verify_listing` call
+    that returns a fresh-fields diff triggers an
+    `ApartmentRepository.upsert` with the new fields, a
+    re-score, and a `verification_changes` block in the run
+    report listing the changed fields and the old → new
+    values. A test asserts the DB row's `price_eur`,
+    `size_m2`, etc. match the fresh fields, the new score
+    row is the most recent in the `ranking_scores` table,
+    and the run report carries the diff.
+14. **Verifier — `dead` row is dropped, reserve is
+    promoted.** A top-N list of 10 with 2 `dead` rows
+    produces an email body of 8 rows drawn from the original
+    list + 2 promoted from the ranker's pre-dedup top-N×2
+    reserve. A test asserts the final list is the union of
+    the 8 `live`/`changed` rows and the 2 reserve rows, the
+    dropped rows carry `verification_status="dead"`, and
+    the promoted rows carry `verification_status="promoted"`.
+    `promotions_from_top_nx2` is 2 in the run report.
+15. **Verifier — dead rows exhaust the reserve.** A top-N
+    list of 10 with 11 `dead` rows (i.e. more dead than
+    reserve capacity) produces an email body of fewer than
+    10 rows; the run report's `top_n_returned` is honest
+    about the count, the `verification` block's
+    `rows_dead` is 11, and `promotions_from_top_nx2` is the
+    reserve's full size. A test asserts the email body's
+    "showing N of M ranked apartments" footer reflects the
+    partial count.
+16. **Verifier — time budget honoured.** A fake `ScraperPort`
+    whose `verify_listing` sleeps 10s per call, with
+    `verifier_time_budget_s=15`, finishes in ≤ 15s with
+    unverifiable rows carrying `verification_status="unknown"`
+    and a `verification_warning` field. A test asserts the
+    phase returns within the budget, the `truncated_by_time_budget`
+    flag on the `verification` block is `true`, and the
+    email body includes the warning string.
+17. **Verifier — per-portal failure is contained.** A fake
+    `ScraperPort` whose `verify_listing` raises for every
+    call produces a `verification` block with
+    `rows_unknown == top_n`, `truncated_by_time_budget=false`,
+    and a structured warning. The email still ships with
+    the original top-N rows. A test asserts no row is
+    silently dropped just because verification failed.
+18. **Verifier — Idealista reuses the shared
+    `BrowserContext`.** A unit test asserts that ten
+    sequential `IdealistaScraper.verify_listing` calls
+    share the same `playwright` `BrowserContext` (the
+    same context the deep-fetch path uses) and that the
+    context is not re-launched per call. A `close()` test
+    asserts the context is closed at scraper shutdown.
+19. **Email template carries the verification status.** A
+    test renders the email body from a 10-row top-N with a
+    mix of `live`, `changed`, `dead` (promoted reserve),
+    and `unknown` rows. Asserts the body has the right
+    per-row status badge string for each row, the
+    "showing N of M" footer, and the changed-row
+    annotation ("price dropped from X to Y"). The body is
+    valid HTML / plain text per the existing template
+    contract.
 
 ## Definition of done
 
