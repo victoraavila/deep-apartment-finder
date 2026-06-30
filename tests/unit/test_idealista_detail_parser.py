@@ -28,6 +28,7 @@ from pathlib import Path
 
 from deep_apartment_finder.adapters.scrapers.idealista.api import (
     apply_detail_enrichment,
+    detail_page_to_apartment,
     parse_detail_page,
 )
 from deep_apartment_finder.ports.scraper import ListingCard
@@ -259,3 +260,19 @@ def test_apply_detail_enrichment_falls_back_to_card_on_empty_detail() -> None:
     assert apt.rooms == 2
     assert float(apt.size_m2) == 70.0
     assert apt.description == "search card description (short)"
+
+
+def test_detail_page_to_apartment_builds_detail_only_fallback() -> None:
+    html = (FIXTURES / "detail_page1.html").read_text()
+    apt = detail_page_to_apartment(
+        html,
+        url="https://www.idealista.com/inmueble/111886330/",
+        external_id="111886330",
+    )
+
+    assert apt.external_id == "111886330"
+    assert apt.title == "Piso en Calle Test 1, Zaragoza"
+    assert apt.bathrooms == 1
+    assert apt.rooms == 2
+    assert float(apt.size_m2) == 70.0
+    assert apt.raw["detail_only"] is True

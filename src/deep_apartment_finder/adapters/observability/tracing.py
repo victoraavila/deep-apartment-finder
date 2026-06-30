@@ -190,26 +190,29 @@ def root_trace(
             project_name=_resolve_project(),
         )
         tree = manager.__enter__()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("LangSmith root trace failed; continuing without trace: %s", exc)
+    except Exception as init_exc:  # noqa: BLE001
+        logger.warning(
+            "LangSmith root trace failed; continuing without trace: %s",
+            init_exc,
+        )
         yield None
         return
 
     exc_type: type[BaseException] | None = None
-    exc: BaseException | None = None
+    active_exc: BaseException | None = None
     tb: Any = None
     try:
         _LAST_TRACE_URL = _trace_url_from_tree(tree)
         yield tree
     except BaseException as caught:
         exc_type = type(caught)
-        exc = caught
+        active_exc = caught
         tb = caught.__traceback__
         raise
     finally:
         _LAST_TRACE_URL = _trace_url_from_tree(tree) or _LAST_TRACE_URL
         try:
-            manager.__exit__(exc_type, exc, tb)
+            manager.__exit__(exc_type, active_exc, tb)
         except Exception as close_exc:  # noqa: BLE001
             logger.warning("LangSmith root trace close failed: %s", close_exc)
 

@@ -76,9 +76,8 @@ async def _gather_subagents(
     """
     from langchain_core.messages import HumanMessage
 
-    state: dict[str, Any] = {"messages": [HumanMessage(content=brief)]}
-
     async def _run_one(name: str, runnable: Runnable) -> tuple[str, dict[str, Any]]:
+        state: dict[str, Any] = {"messages": [HumanMessage(content=brief)]}
         try:
             result = await runnable.ainvoke(state)
         except BaseException as exc:  # noqa: BLE001

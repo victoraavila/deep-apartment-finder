@@ -119,6 +119,34 @@ async def test_run_scrapers_forwards_same_brief_to_both_subagents() -> None:
         assert msg.content == "Plan a Sprint 4 run for Zaragoza."
 
 
+@pytest.mark.asyncio
+async def test_run_scrapers_isolates_subagent_state() -> None:
+    """Concurrent subagents should not share a mutable messages list."""
+
+    class _MutatingRunnable:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.seen_lengths: list[int] = []
+
+        async def ainvoke(self, state: dict[str, Any], config: Any = None) -> dict[str, Any]:
+            self.seen_lengths.append(len(state["messages"]))
+            state["messages"].append(AIMessage(content=f"{self.name} mutation"))
+            return {"messages": [AIMessage(content=f"{self.name} done")]}
+
+    foto = _MutatingRunnable("foto")
+    ideal = _MutatingRunnable("ideal")
+
+    out = await _gather_subagents(
+        [("fotocasa_scraper", foto), ("idealista_scraper", ideal)],
+        brief="x",
+    )
+
+    assert out["fotocasa_scraper"]["status"] == "ok"
+    assert out["idealista_scraper"]["status"] == "ok"
+    assert foto.seen_lengths == [1]
+    assert ideal.seen_lengths == [1]
+
+
 # --- partial failure -----------------------------------------------------
 
 
